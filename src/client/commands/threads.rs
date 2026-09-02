@@ -1,4 +1,4 @@
-//! `board new`, `reply`, `threads`, `show`, `close`, `reopen`.
+//! `babble new`, `reply`, `threads`, `show`, `close`, `reopen`.
 
 use crate::api;
 use crate::cli::{NewArgs, ReplyArgs, ShowArgs, ThreadsArgs};

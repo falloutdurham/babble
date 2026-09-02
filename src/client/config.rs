@@ -1,4 +1,4 @@
-//! `~/.config/board/config.toml`, plus the flag > env > profile precedence
+//! `~/.config/babble/config.toml`, plus the flag > env > profile precedence
 //! rules that turn it into a URL and token.
 
 use crate::client::error::{ClientError, Kind};
@@ -24,13 +24,13 @@ pub struct Profile {
     pub token: Option<String>,
 }
 
-/// Where the config lives. `BOARD_CONFIG` overrides it, which keeps tests off
+/// Where the config lives. `BABBLE_CONFIG` overrides it, which keeps tests off
 /// the real user config.
 pub fn config_path() -> Result<PathBuf, ClientError> {
-    if let Ok(p) = std::env::var("BOARD_CONFIG") {
+    if let Ok(p) = std::env::var("BABBLE_CONFIG") {
         return Ok(PathBuf::from(p));
     }
-    let dirs = directories::ProjectDirs::from("", "", "board")
+    let dirs = directories::ProjectDirs::from("", "", "babble")
         .ok_or_else(|| ClientError::new(Kind::Config, "cannot determine a config directory"))?;
     Ok(dirs.config_dir().join("config.toml"))
 }
@@ -82,15 +82,15 @@ pub struct Overrides {
 }
 
 impl Overrides {
-    /// Fold in `BOARD_URL` / `BOARD_TOKEN` / `BOARD_PROFILE` wherever a flag
+    /// Fold in `BABBLE_URL` / `BABBLE_TOKEN` / `BABBLE_PROFILE` wherever a flag
     /// did not already supply a value.
     pub fn with_env(mut self) -> Self {
         fn env(key: &str) -> Option<String> {
             std::env::var(key).ok().filter(|v| !v.is_empty())
         }
-        self.url = self.url.or_else(|| env("BOARD_URL"));
-        self.token = self.token.or_else(|| env("BOARD_TOKEN"));
-        self.profile = self.profile.or_else(|| env("BOARD_PROFILE"));
+        self.url = self.url.or_else(|| env("BABBLE_URL"));
+        self.token = self.token.or_else(|| env("BABBLE_TOKEN"));
+        self.profile = self.profile.or_else(|| env("BABBLE_PROFILE"));
         self
     }
 }
@@ -130,7 +130,7 @@ pub fn resolve_with(cfg: &ConfigFile, ov: &Overrides) -> Result<Resolved, Client
         .ok_or_else(|| {
             ClientError::new(
                 Kind::Config,
-                "no token: pass --token, set BOARD_TOKEN, or run `board config init`",
+                "no token: pass --token, set BABBLE_TOKEN, or run `babble config init`",
             )
         })?;
 

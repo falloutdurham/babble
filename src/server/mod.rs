@@ -125,7 +125,7 @@ where
     if let Err(e) = conn.pragma_update(None, "wal_checkpoint", "TRUNCATE") {
         tracing::warn!(error = %e, "could not checkpoint the write-ahead log");
     }
-    tracing::info!("board server stopped");
+    tracing::info!("babble server stopped");
     Ok(())
 }
 
@@ -164,6 +164,6 @@ async fn shutdown_signal() {
 pub async fn run(args: ServeArgs) -> Result<()> {
     let (listener, state) = bind(&args).await?;
     let addr = listener.local_addr()?;
-    tracing::info!(%addr, db = %args.db, "board server listening");
+    tracing::info!(%addr, db = %args.db, "babble server listening");
     serve(listener, state, shutdown_signal()).await
 }

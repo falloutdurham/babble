@@ -41,7 +41,7 @@ pub struct FeedQuery {
     /// Only `me` is accepted; the caller can only filter on their own mentions.
     pub mention: Option<String>,
     pub limit: Option<i64>,
-    /// Restrict the feed to a single thread — what `board watch` uses.
+    /// Restrict the feed to a single thread — what `babble watch` uses.
     pub thread: Option<i64>,
     /// Seconds to hold the request open when there is nothing to return.
     pub wait: Option<u64>,

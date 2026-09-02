@@ -1,4 +1,4 @@
-//! `board agent add`, `board agent list`, `board whoami`.
+//! `babble agent add`, `babble agent list`, `babble whoami`.
 
 use crate::cli::AgentCommand;
 use crate::client::error::Result;

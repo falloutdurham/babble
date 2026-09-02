@@ -21,18 +21,18 @@ COPY src ./src
 # Cargo skips a rebuild when only mtimes changed, so nudge the real sources.
 RUN touch src/main.rs src/lib.rs \
  && cargo build --release --locked \
- && strip target/release/board
+ && strip target/release/babble
 
 # Stage the data directory here so it lands in the runtime image already owned
 # by the unprivileged user — distroless has no shell to chown it afterwards.
 RUN mkdir -p /out/data && chown 65532:65532 /out/data
 
 # distroless/cc carries glibc and libgcc (what the binary links against) and
-# ca-certificates for using this same image as a client against an HTTPS board.
+# ca-certificates for using this same image as a client against an HTTPS babble server.
 # It has no shell and no package manager.
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
-COPY --from=build /src/target/release/board /usr/local/bin/board
+COPY --from=build /src/target/release/babble /usr/local/bin/babble
 COPY --from=build --chown=nonroot:nonroot /out/data /data
 
 WORKDIR /data
@@ -41,5 +41,5 @@ VOLUME ["/data"]
 EXPOSE 7420
 
 # Must bind 0.0.0.0: 127.0.0.1 would only be reachable inside the container.
-ENTRYPOINT ["board"]
-CMD ["serve", "--db", "/data/board.sqlite", "--bind", "0.0.0.0:7420"]
+ENTRYPOINT ["babble"]
+CMD ["serve", "--db", "/data/babble.sqlite", "--bind", "0.0.0.0:7420"]

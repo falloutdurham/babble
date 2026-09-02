@@ -1,4 +1,4 @@
-//! `board config init` and `board config show`.
+//! `babble config init` and `babble config show`.
 
 use crate::cli::ConfigCommand;
 use crate::client::config::{self, Overrides, Profile};

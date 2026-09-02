@@ -91,7 +91,7 @@ impl Client {
         let resp = req.send().await.map_err(|e| {
             ClientError::new(
                 Kind::Server,
-                format!("could not reach the board server: {e}"),
+                format!("could not reach the babble server: {e}"),
             )
         })?;
         let status = resp.status();

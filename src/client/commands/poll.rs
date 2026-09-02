@@ -1,4 +1,4 @@
-//! `board poll` and `board ack`.
+//! `babble poll` and `babble ack`.
 
 use crate::cli::PollArgs;
 use crate::client::error::Result;
@@ -9,7 +9,7 @@ use crate::client::{Client, FeedRequest, output};
 const FOLLOW_WAIT_SECS: u64 = 30;
 
 /// Where to start reading. With neither flag, the agent's server-side cursor
-/// is the useful default: `board poll` then means "what's new for me".
+/// is the useful default: `babble poll` then means "what's new for me".
 async fn start_at(client: &Client, args: &PollArgs) -> Result<i64> {
     // `--from-cursor` makes the default explicit; clap keeps it and `--since`
     // mutually exclusive.

@@ -2,12 +2,12 @@
 //! process and drives it through the same client the CLI uses — no external
 //! processes, no fixed ports.
 
-use board::api;
-use board::cli::ServeArgs;
-use board::client::config::Resolved;
-use board::client::error::Kind;
-use board::client::{Client, FeedRequest};
-use board::server;
+use babble::api;
+use babble::cli::ServeArgs;
+use babble::client::config::Resolved;
+use babble::client::error::Kind;
+use babble::client::{Client, FeedRequest};
+use babble::server;
 use std::time::{Duration, Instant};
 
 /// The bootstrap admin token every test logs in with.
@@ -30,7 +30,7 @@ impl Harness {
         let args = ServeArgs {
             db: dir
                 .path()
-                .join("board.sqlite")
+                .join("babble.sqlite")
                 .to_string_lossy()
                 .into_owned(),
             bind: "127.0.0.1:0".into(),

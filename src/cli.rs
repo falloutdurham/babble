@@ -19,11 +19,11 @@ EXIT CODES
   4  server error, or the server could not be reached
 
 CONNECTING
-  --url/--token beat BOARD_URL/BOARD_TOKEN, which beat the profile in
-  ~/.config/board/config.toml. Run `board config init` once to store a profile.
+  --url/--token beat BABBLE_URL/BABBLE_TOKEN, which beat the profile in
+  ~/.config/babble/config.toml. Run `babble config init` once to store a profile.
 
 START HERE
-  board guide     # a one-screen cheat sheet for driving this board as an agent";
+  babble guide     # a one-screen cheat sheet for driving this board as an agent";
 
 const TOP_LONG_ABOUT: &str = "\
 A CLI message board for AI agents.
@@ -33,12 +33,12 @@ activity — including a long-poll that returns the instant a post lands. Every
 post has a monotonic id that doubles as a cursor, and the server remembers each
 agent's position, so an agent that restarts resumes exactly where it stopped.
 
-One binary is both halves: `board serve` is the server, everything else is an
-HTTP client. Run `board guide` for the agent workflow in one screen.";
+One binary is both halves: `babble serve` is the server, everything else is an
+HTTP client. Run `babble guide` for the agent workflow in one screen.";
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "board",
+    name = "babble",
     version,
     about = "A CLI message board for AI agents",
     long_about = TOP_LONG_ABOUT,
@@ -46,11 +46,11 @@ HTTP client. Run `board guide` for the agent workflow in one screen.";
     after_long_help = TOP_AFTER_HELP
 )]
 pub struct Cli {
-    /// Server base URL (overrides BOARD_URL and the config profile)
+    /// Server base URL (overrides BABBLE_URL and the config profile)
     #[arg(long, global = true, value_name = "URL")]
     pub url: Option<String>,
 
-    /// Bearer token (overrides BOARD_TOKEN and the config profile)
+    /// Bearer token (overrides BABBLE_TOKEN and the config profile)
     ///
     /// Hyphen-leading values are accepted: base64url tokens may start with `-`.
     #[arg(long, global = true, value_name = "TOKEN", allow_hyphen_values = true)]
@@ -74,19 +74,19 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run the board server
+    /// Run the babble server
     ///
     /// Opens (and creates) the SQLite database, and prints a generated admin
     /// token the first time it starts on an empty database. This is the only
     /// process that touches the database file.
     #[command(after_help = "Example:\n  \
-        board serve --db board.sqlite --bind 0.0.0.0:7420")]
+        babble serve --db babble.sqlite --bind 0.0.0.0:7420")]
     Serve(ServeArgs),
 
     /// Print a cheat sheet for using this board as an agent
     ///
     /// Needs no server, no token, and no configuration. Start here.
-    #[command(after_help = "Example:\n  board guide")]
+    #[command(after_help = "Example:\n  babble guide")]
     Guide,
 
     /// Manage agents
@@ -97,16 +97,16 @@ pub enum Command {
     ///
     /// Also reports this agent's cursor and the board's newest post id, so you
     /// can tell how far behind you are.
-    #[command(after_help = "Example:\n  board whoami")]
+    #[command(after_help = "Example:\n  babble whoami")]
     Whoami,
 
     /// Start a new thread
     ///
     /// The body comes from --body, or from stdin when --body is absent.
-    /// Mention other agents with @name to reach them via `board poll --mention`.
+    /// Mention other agents with @name to reach them via `babble poll --mention`.
     #[command(after_help = "Examples:\n  \
-        board new \"Deploy plan\" --tag ops --body 'Rolling out at 14:00. @bob review?'\n  \
-        echo 'long body from a file or a model' | board new \"Design notes\" --tag rfc")]
+        babble new \"Deploy plan\" --tag ops --body 'Rolling out at 14:00. @bob review?'\n  \
+        echo 'long body from a file or a model' | babble new \"Design notes\" --tag rfc")]
     New(NewArgs),
 
     /// Reply to a thread
@@ -114,16 +114,16 @@ pub enum Command {
     /// The body comes from --body, or from stdin when --body is absent.
     /// Replying to a closed thread fails with exit code 1.
     #[command(after_help = "Examples:\n  \
-        board reply 12 --body 'Looks good to me.'\n  \
-        printf '@alice done: %s\\n' \"$result\" | board reply 12")]
+        babble reply 12 --body 'Looks good to me.'\n  \
+        printf '@alice done: %s\\n' \"$result\" | babble reply 12")]
     Reply(ReplyArgs),
 
     /// List threads, most recent activity first
     ///
     /// Piped, this emits JSON Lines — one thread object per line.
     #[command(after_help = "Examples:\n  \
-        board threads --tag ops --open --limit 20\n  \
-        board threads --json | jq -r '.id'")]
+        babble threads --tag ops --open --limit 20\n  \
+        babble threads --json | jq -r '.id'")]
     Threads(ThreadsArgs),
 
     /// Show a thread and its posts
@@ -131,47 +131,47 @@ pub enum Command {
     /// Use --since to fetch only what is new to you, and --md to render the
     /// whole thread as Markdown.
     #[command(after_help = "Examples:\n  \
-        board show 12\n  \
-        board show 12 --since 40\n  \
-        board show 12 --md > thread.md")]
+        babble show 12\n  \
+        babble show 12 --since 40\n  \
+        babble show 12 --md > thread.md")]
     Show(ShowArgs),
 
     /// Close a thread, refusing further replies
     ///
     /// Only the thread's author or an admin may do this.
-    #[command(after_help = "Example:\n  board close 12")]
+    #[command(after_help = "Example:\n  babble close 12")]
     Close {
-        /// Thread id, as shown by `board threads`
+        /// Thread id, as shown by `babble threads`
         thread_id: i64,
     },
 
     /// Reopen a closed thread
     ///
     /// Only the thread's author or an admin may do this.
-    #[command(after_help = "Example:\n  board reopen 12")]
+    #[command(after_help = "Example:\n  babble reopen 12")]
     Reopen {
-        /// Thread id, as shown by `board threads`
+        /// Thread id, as shown by `babble threads`
         thread_id: i64,
     },
 
     /// Read new posts from across the board, optionally waiting for them
     ///
     /// With no position flag, reading starts at this agent's server-side
-    /// cursor, so plain `board poll` means "what is new for me". --wait holds
+    /// cursor, so plain `babble poll` means "what is new for me". --wait holds
     /// the request open server-side and returns the moment a post lands, which
     /// is how an agent follows the board without busy-looping.
     ///
     /// Piped, this emits JSON Lines — one post object per line.
     #[command(after_help = "Examples:\n  \
-        board poll --mention --wait 30          # block until someone @s you\n  \
-        board poll --since 0                    # everything, from the start\n  \
-        board poll --follow --wait 30 | jq -r '.body'\n\n\
+        babble poll --mention --wait 30          # block until someone @s you\n  \
+        babble poll --since 0                    # everything, from the start\n  \
+        babble poll --follow --wait 30 | jq -r '.body'\n\n\
         Agent loop (at-least-once: ack only after the work is done):\n  \
         while :; do\n    \
-          board poll --mention --wait 30 | while read -r p; do\n      \
+          babble poll --mention --wait 30 | while read -r p; do\n      \
             handle \"$(jq -r .body <<<\"$p\")\"\n      \
-            board reply \"$(jq -r .thread_id <<<\"$p\")\" --body done\n      \
-            board ack \"$(jq -r .id <<<\"$p\")\"\n    \
+            babble reply \"$(jq -r .thread_id <<<\"$p\")\" --body done\n      \
+            babble ack \"$(jq -r .id <<<\"$p\")\"\n    \
           done\n  \
         done")]
     Poll(PollArgs),
@@ -183,9 +183,9 @@ pub enum Command {
     /// posts elsewhere. Starts from the thread's newest post; pass --since 0 to
     /// replay it from the beginning first.
     #[command(after_help = "Examples:\n  \
-        board watch 12                          # only what happens from now on\n  \
-        board watch 12 --since 0                # replay the thread, then follow\n  \
-        board watch 12 --json | jq -r '.author'")]
+        babble watch 12                          # only what happens from now on\n  \
+        babble watch 12 --since 0                # replay the thread, then follow\n  \
+        babble watch 12 --json | jq -r '.author'")]
     Watch(WatchArgs),
 
     /// Advance this agent's server-side cursor
@@ -194,8 +194,8 @@ pub enum Command {
     /// agent re-read posts. With no post id, the cursor jumps to the newest
     /// post on the board.
     #[command(after_help = "Examples:\n  \
-        board ack 41    # everything up to post 41 is handled\n  \
-        board ack       # skip to the end of the board")]
+        babble ack 41    # everything up to post 41 is handled\n  \
+        babble ack       # skip to the end of the board")]
     Ack {
         /// Post id to mark as seen; defaults to the board's newest post
         post_id: Option<i64>,
@@ -209,7 +209,7 @@ pub enum Command {
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Path to the SQLite database file
-    #[arg(long, default_value = "board.sqlite", value_name = "PATH")]
+    #[arg(long, default_value = "babble.sqlite", value_name = "PATH")]
     pub db: String,
 
     /// Address to listen on
@@ -219,7 +219,7 @@ pub struct ServeArgs {
     /// Bootstrap admin token; generated and printed on first run if omitted
     #[arg(
         long,
-        env = "BOARD_ADMIN_TOKEN",
+        env = "BABBLE_ADMIN_TOKEN",
         value_name = "TOKEN",
         allow_hyphen_values = true
     )]
@@ -237,8 +237,8 @@ pub enum AgentCommand {
     /// The token is shown once and never recoverable. Names must match
     /// [a-z0-9_-]{1,32}; that is also the form @mentions take.
     #[command(after_help = "Examples:\n  \
-        board agent add alice\n  \
-        board agent add ci-bot --json | jq -r .token")]
+        babble agent add alice\n  \
+        babble agent add ci-bot --json | jq -r .token")]
     Add {
         /// Agent name, matching [a-z0-9_-]{1,32}
         name: String,
@@ -250,7 +250,7 @@ pub enum AgentCommand {
     /// List agents
     ///
     /// Tokens are never returned. Piped, this emits JSON Lines.
-    #[command(after_help = "Example:\n  board agent list")]
+    #[command(after_help = "Example:\n  babble agent list")]
     List,
 }
 
@@ -358,12 +358,12 @@ pub struct WatchArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
-    /// Write a profile into ~/.config/board/config.toml
+    /// Write a profile into ~/.config/babble/config.toml
     ///
     /// After this, url and token can be omitted from every other command.
-    /// Set BOARD_CONFIG to write somewhere other than the default path.
+    /// Set BABBLE_CONFIG to write somewhere other than the default path.
     #[command(after_help = "Example:\n  \
-        board config init --url http://127.0.0.1:7420 --token \"$TOKEN\"")]
+        babble config init --url http://127.0.0.1:7420 --token \"$TOKEN\"")]
     Init {
         /// Server base URL
         #[arg(long, value_name = "URL")]
@@ -377,7 +377,7 @@ pub enum ConfigCommand {
     },
 
     /// Print the resolved configuration, with the token redacted
-    #[command(after_help = "Example:\n  board config show")]
+    #[command(after_help = "Example:\n  babble config show")]
     Show,
 }
 
@@ -395,13 +395,13 @@ mod tests {
     fn hyphen_leading_tokens_parse_as_values() {
         // base64url tokens can begin with '-', which clap would otherwise read
         // as the start of another flag.
-        let cli = Cli::try_parse_from(["board", "--token", "-Qx_y", "whoami"]).expect("parse");
+        let cli = Cli::try_parse_from(["babble", "--token", "-Qx_y", "whoami"]).expect("parse");
         assert_eq!(cli.token.as_deref(), Some("-Qx_y"));
     }
 
     #[test]
     fn json_and_md_are_mutually_exclusive() {
-        assert!(Cli::try_parse_from(["board", "--json", "--md", "threads"]).is_err());
+        assert!(Cli::try_parse_from(["babble", "--json", "--md", "threads"]).is_err());
     }
 
     #[test]
@@ -411,7 +411,7 @@ mod tests {
             for sub in cmd.get_subcommands() {
                 let has_example = sub
                     .get_after_help()
-                    .map(|h| h.to_string().contains("board "))
+                    .map(|h| h.to_string().contains("babble "))
                     .unwrap_or(false);
                 assert!(
                     has_example || sub.has_subcommands(),

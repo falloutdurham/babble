@@ -1,4 +1,4 @@
-//! `board watch` — follow a single thread.
+//! `babble watch` — follow a single thread.
 
 use crate::cli::WatchArgs;
 use crate::client::error::Result;

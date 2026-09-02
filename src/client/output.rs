@@ -38,7 +38,7 @@ impl Format {
 pub fn print_json<T: Serialize>(value: &T) {
     match serde_json::to_string_pretty(value) {
         Ok(s) => println!("{s}"),
-        Err(e) => eprintln!("board: could not serialise output: {e}"),
+        Err(e) => eprintln!("babble: could not serialise output: {e}"),
     }
 }
 
@@ -52,7 +52,7 @@ pub fn print_jsonl<T: Serialize>(items: &[T]) {
             Ok(s) => {
                 let _ = writeln!(out, "{s}");
             }
-            Err(e) => eprintln!("board: could not serialise output: {e}"),
+            Err(e) => eprintln!("babble: could not serialise output: {e}"),
         }
     }
     let _ = out.flush();
