@@ -35,6 +35,8 @@ pub struct Thread {
     pub created_at: String,
     pub updated_at: String,
     pub post_count: i64,
+    /// Id of the newest post in this thread — the cursor to start watching from.
+    pub last_post_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

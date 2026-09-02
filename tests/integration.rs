@@ -4,9 +4,9 @@
 
 use board::api;
 use board::cli::ServeArgs;
-use board::client::Client;
 use board::client::config::Resolved;
 use board::client::error::Kind;
+use board::client::{Client, FeedRequest};
 use board::server;
 use std::time::{Duration, Instant};
 
@@ -428,13 +428,16 @@ async fn the_feed_pages_forward_from_since() {
     alice.reply(t.thread.id, "two").await.unwrap();
     alice.reply(t.thread.id, "three").await.unwrap();
 
-    let first = alice.feed(0, false, Some(2), None).await.unwrap();
+    let first = alice
+        .feed(&FeedRequest::since(0).limit(Some(2)))
+        .await
+        .unwrap();
     assert_eq!(first.posts.len(), 2);
     assert_eq!(first.next_since, 2);
     assert_eq!(first.posts[0].thread_title, "t");
 
     let rest = alice
-        .feed(first.next_since, false, Some(2), None)
+        .feed(&FeedRequest::since(first.next_since).limit(Some(2)))
         .await
         .unwrap();
     assert_eq!(rest.posts.len(), 1);
@@ -442,7 +445,7 @@ async fn the_feed_pages_forward_from_since() {
 
     // Nothing left: next_since holds its position.
     let empty = alice
-        .feed(rest.next_since, false, None, None)
+        .feed(&FeedRequest::since(rest.next_since))
         .await
         .unwrap();
     assert!(empty.posts.is_empty());
@@ -461,13 +464,13 @@ async fn mention_me_filters_the_feed() {
         .unwrap();
     alice.reply(t.thread.id, "over to you @bob").await.unwrap();
 
-    let mine = bob.feed(0, true, None, None).await.unwrap();
+    let mine = bob.feed(&FeedRequest::since(0).mention()).await.unwrap();
     assert_eq!(mine.posts.len(), 1);
     assert_eq!(mine.posts[0].body, "over to you @bob");
 
     assert!(
         alice
-            .feed(0, true, None, None)
+            .feed(&FeedRequest::since(0).mention())
             .await
             .unwrap()
             .posts
@@ -492,7 +495,10 @@ async fn a_long_poll_returns_as_soon_as_a_post_lands() {
     });
 
     let started = Instant::now();
-    let feed = bob.feed(1, false, None, Some(10)).await.unwrap();
+    let feed = bob
+        .feed(&FeedRequest::since(1).wait(Some(10)))
+        .await
+        .unwrap();
     let elapsed = started.elapsed();
 
     assert_eq!(feed.posts.len(), 1);
@@ -506,7 +512,10 @@ async fn a_long_poll_times_out_empty_and_successful() {
     let alice = h.agent("alice").await;
 
     let started = Instant::now();
-    let feed = alice.feed(0, false, None, Some(1)).await.unwrap();
+    let feed = alice
+        .feed(&FeedRequest::since(0).wait(Some(1)))
+        .await
+        .unwrap();
     assert!(feed.posts.is_empty());
     assert_eq!(feed.next_since, 0);
     assert!(started.elapsed() >= Duration::from_millis(900));
@@ -522,7 +531,10 @@ async fn a_waiting_poll_still_returns_existing_posts_immediately() {
         .unwrap();
 
     let started = Instant::now();
-    let feed = alice.feed(0, false, None, Some(30)).await.unwrap();
+    let feed = alice
+        .feed(&FeedRequest::since(0).wait(Some(30)))
+        .await
+        .unwrap();
     assert_eq!(feed.posts.len(), 1);
     assert!(started.elapsed() < Duration::from_secs(2));
 }
@@ -539,7 +551,7 @@ async fn the_mention_filter_only_accepts_me() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
-    assert!(alice.feed(0, true, None, None).await.is_ok());
+    assert!(alice.feed(&FeedRequest::since(0).mention()).await.is_ok());
 }
 
 // ------------------------------------------------------------- rate limits
@@ -620,9 +632,127 @@ async fn ten_agents_posting_at_once_lose_nothing() {
 
     // And the feed sees the same set.
     let feed = alice
-        .feed(0, false, Some(api::MAX_LIMIT), None)
+        .feed(&FeedRequest::since(0).limit(Some(api::MAX_LIMIT)))
         .await
         .unwrap();
     assert_eq!(feed.posts.len(), AGENTS * EACH + 1);
     assert_eq!(feed.next_since, *ids.last().unwrap());
+}
+
+// ------------------------------------------------------------------- watch
+
+#[tokio::test]
+async fn a_thread_reports_its_newest_post_id() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+
+    let t = alice
+        .create_thread(&new_thread("t", "one", &[]))
+        .await
+        .unwrap();
+    assert_eq!(t.thread.last_post_id, t.posts[0].id);
+
+    let reply = alice.reply(t.thread.id, "two").await.unwrap();
+    let listed = alice.list_threads(None, None, None, None).await.unwrap();
+    assert_eq!(listed.threads[0].last_post_id, reply.id);
+}
+
+#[tokio::test]
+async fn the_feed_can_be_scoped_to_one_thread() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+
+    let a = alice
+        .create_thread(&new_thread("a", "in a", &[]))
+        .await
+        .unwrap();
+    let b = alice
+        .create_thread(&new_thread("b", "in b", &[]))
+        .await
+        .unwrap();
+    alice.reply(a.thread.id, "also in a").await.unwrap();
+
+    let scoped = alice
+        .feed(&FeedRequest::since(0).thread(a.thread.id))
+        .await
+        .unwrap();
+    assert_eq!(scoped.posts.len(), 2);
+    assert!(scoped.posts.iter().all(|p| p.thread_id == a.thread.id));
+
+    let other = alice
+        .feed(&FeedRequest::since(0).thread(b.thread.id))
+        .await
+        .unwrap();
+    assert_eq!(other.posts.len(), 1);
+    assert_eq!(other.posts[0].body, "in b");
+}
+
+#[tokio::test]
+async fn watching_a_missing_thread_is_a_404_not_a_hang() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+
+    let started = Instant::now();
+    let err = alice
+        .feed(&FeedRequest::since(0).thread(9999).wait(Some(30)))
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, Kind::NotFound);
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn a_scoped_long_poll_ignores_posts_in_other_threads() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+
+    let watched = alice
+        .create_thread(&new_thread("watched", "start", &[]))
+        .await
+        .unwrap();
+    let other = alice
+        .create_thread(&new_thread("other", "start", &[]))
+        .await
+        .unwrap();
+    let watched_id = watched.thread.id;
+    let other_id = other.thread.id;
+
+    tokio::spawn(async move {
+        // A post in the wrong thread wakes the notifier but must not satisfy
+        // the query; the right one, later, must.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        alice.reply(other_id, "noise").await.expect("reply");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        alice.reply(watched_id, "signal").await.expect("reply");
+    });
+
+    let feed = bob
+        .feed(
+            &FeedRequest::since(watched.thread.last_post_id)
+                .thread(watched_id)
+                .wait(Some(10)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(feed.posts.len(), 1);
+    assert_eq!(feed.posts[0].body, "signal");
+}
+
+#[tokio::test]
+async fn watching_does_not_move_the_global_cursor() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+
+    let t = alice
+        .create_thread(&new_thread("t", "one", &[]))
+        .await
+        .unwrap();
+    alice.reply(t.thread.id, "two").await.unwrap();
+
+    bob.feed(&FeedRequest::since(0).thread(t.thread.id))
+        .await
+        .unwrap();
+    assert_eq!(bob.whoami().await.unwrap().cursor, 0);
 }

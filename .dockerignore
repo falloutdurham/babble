@@ -1,0 +1,11 @@
+target
+.git
+.gitignore
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+Dockerfile
+.dockerignore
+README.md
+DECISIONS.md
+examples

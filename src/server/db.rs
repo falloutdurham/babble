@@ -226,7 +226,8 @@ pub fn set_cursor(conn: &Connection, agent_id: i64, last_seen: i64) -> rusqlite:
 
 const THREAD_COLS: &str = "SELECT t.id, t.title, a.name, t.status, t.created_at, t.updated_at,
         (SELECT COUNT(*) FROM posts p WHERE p.thread_id = t.id),
-        (SELECT group_concat(tt.tag, char(31)) FROM thread_tags tt WHERE tt.thread_id = t.id)
+        (SELECT group_concat(tt.tag, char(31)) FROM thread_tags tt WHERE tt.thread_id = t.id),
+        COALESCE((SELECT MAX(p.id) FROM posts p WHERE p.thread_id = t.id), 0)
    FROM threads t JOIN agents a ON a.id = t.author_id";
 
 fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<api::Thread> {
@@ -239,6 +240,7 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<api::Thread> {
         updated_at: row.get(5)?,
         post_count: row.get(6)?,
         tags: split_list(row.get(7)?),
+        last_post_id: row.get(8)?,
     })
 }
 
@@ -434,29 +436,40 @@ pub fn thread_posts(
     rows.collect()
 }
 
-/// Posts after `since`, oldest first. When `mentioning` is set, only posts
-/// that mention that agent are returned.
-pub fn feed(
-    conn: &Connection,
-    since: i64,
-    mentioning: Option<i64>,
-    limit: i64,
-) -> rusqlite::Result<Vec<api::Post>> {
-    let (sql, args): (String, Vec<Box<dyn rusqlite::ToSql>>) = match mentioning {
-        Some(agent_id) => (
-            format!(
-                "{POST_COLS} WHERE p.id > ?1
-                   AND EXISTS (SELECT 1 FROM mentions m
-                                WHERE m.post_id = p.id AND m.agent_id = ?2)
-                 ORDER BY p.id LIMIT ?3"
-            ),
-            vec![Box::new(since), Box::new(agent_id), Box::new(limit)],
-        ),
-        None => (
-            format!("{POST_COLS} WHERE p.id > ?1 ORDER BY p.id LIMIT ?2"),
-            vec![Box::new(since), Box::new(limit)],
-        ),
-    };
+/// Which slice of the post stream a feed request wants.
+pub struct FeedFilter {
+    /// Exclusive lower bound on post id.
+    pub since: i64,
+    /// Only posts mentioning this agent.
+    pub mentioning: Option<i64>,
+    /// Only posts in this thread.
+    pub thread: Option<i64>,
+    pub limit: i64,
+}
+
+/// Posts matching `filter`, oldest first.
+pub fn feed(conn: &Connection, filter: &FeedFilter) -> rusqlite::Result<Vec<api::Post>> {
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(filter.since)];
+    let mut wheres = vec!["p.id > ?1".to_string()];
+
+    if let Some(agent_id) = filter.mentioning {
+        args.push(Box::new(agent_id));
+        wheres.push(format!(
+            "EXISTS (SELECT 1 FROM mentions m WHERE m.post_id = p.id AND m.agent_id = ?{})",
+            args.len()
+        ));
+    }
+    if let Some(thread_id) = filter.thread {
+        args.push(Box::new(thread_id));
+        wheres.push(format!("p.thread_id = ?{}", args.len()));
+    }
+    args.push(Box::new(filter.limit));
+
+    let sql = format!(
+        "{POST_COLS} WHERE {} ORDER BY p.id LIMIT ?{}",
+        wheres.join(" AND "),
+        args.len()
+    );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args.iter()), row_to_post)?;
     rows.collect()

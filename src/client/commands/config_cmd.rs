@@ -4,19 +4,20 @@ use crate::cli::ConfigCommand;
 use crate::client::config::{self, Overrides, Profile};
 use crate::client::error::Result;
 use crate::client::output;
+use crate::client::output::Format;
 
-pub fn run(cmd: &ConfigCommand, overrides: &Overrides, json: bool) -> Result<()> {
+pub fn run(cmd: &ConfigCommand, overrides: &Overrides, fmt: Format) -> Result<()> {
     match cmd {
         ConfigCommand::Init {
             url,
             token,
             profile,
-        } => init(url, token, profile.as_deref(), json),
-        ConfigCommand::Show => show(overrides, json),
+        } => init(url, token, profile.as_deref(), fmt),
+        ConfigCommand::Show => show(overrides, fmt),
     }
 }
 
-fn init(url: &str, token: &str, profile: Option<&str>, json: bool) -> Result<()> {
+fn init(url: &str, token: &str, profile: Option<&str>, fmt: Format) -> Result<()> {
     let name = profile.unwrap_or(config::DEFAULT_PROFILE).to_string();
     let mut cfg = config::load()?;
     cfg.profiles.insert(
@@ -32,7 +33,7 @@ fn init(url: &str, token: &str, profile: Option<&str>, json: bool) -> Result<()>
     }
     let path = config::save(&cfg)?;
 
-    if json {
+    if fmt.is_json() {
         output::print_json(&serde_json::json!({
             "profile": name,
             "path": path.to_string_lossy(),
@@ -43,7 +44,7 @@ fn init(url: &str, token: &str, profile: Option<&str>, json: bool) -> Result<()>
     Ok(())
 }
 
-fn show(overrides: &Overrides, json: bool) -> Result<()> {
+fn show(overrides: &Overrides, fmt: Format) -> Result<()> {
     let resolved = config::resolve(overrides)?;
     let path = config::config_path()?;
     // Tokens are never printed back out, only their presence.
@@ -52,7 +53,7 @@ fn show(overrides: &Overrides, json: bool) -> Result<()> {
         "url": resolved.url,
         "token": "<redacted>",
     });
-    if json {
+    if fmt.is_json() {
         output::print_json(&view);
     } else {
         println!("config  {}", path.display());

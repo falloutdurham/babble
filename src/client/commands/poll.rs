@@ -2,7 +2,8 @@
 
 use crate::cli::PollArgs;
 use crate::client::error::Result;
-use crate::client::{Client, output};
+use crate::client::output::Format;
+use crate::client::{Client, FeedRequest, output};
 
 /// How long `--follow` holds each request open when the caller gave no `--wait`.
 const FOLLOW_WAIT_SECS: u64 = 30;
@@ -18,14 +19,15 @@ async fn start_at(client: &Client, args: &PollArgs) -> Result<i64> {
     Ok(args.since.unwrap_or(0))
 }
 
-pub async fn poll(client: &Client, args: &PollArgs, json: bool) -> Result<()> {
+pub async fn poll(client: &Client, args: &PollArgs, fmt: Format) -> Result<()> {
     let mut since = start_at(client, args).await?;
 
     if !args.follow {
+        let req = FeedRequest::since(since).limit(args.limit).wait(args.wait);
         let feed = client
-            .feed(since, args.mention, args.limit, args.wait)
+            .feed(&if args.mention { req.mention() } else { req })
             .await?;
-        emit(&feed.posts, json);
+        output::feed_posts(&feed.posts, fmt);
         return Ok(());
     }
 
@@ -33,37 +35,30 @@ pub async fn poll(client: &Client, args: &PollArgs, json: bool) -> Result<()> {
     // restarted agent picks up exactly where it left off.
     let wait = Some(args.wait.unwrap_or(FOLLOW_WAIT_SECS));
     loop {
-        let feed = client.feed(since, args.mention, args.limit, wait).await?;
+        let req = FeedRequest::since(since).limit(args.limit).wait(wait);
+        let feed = client
+            .feed(&if args.mention { req.mention() } else { req })
+            .await?;
         if feed.posts.is_empty() {
             continue;
         }
-        emit(&feed.posts, json);
+        output::feed_posts(&feed.posts, fmt);
         since = feed.next_since;
         client.set_cursor(since).await?;
     }
 }
 
-fn emit(posts: &[crate::api::Post], json: bool) {
-    if json {
-        output::print_jsonl(posts);
-    } else {
-        for post in posts {
-            output::post_feed_line(post);
-        }
-    }
-}
-
-pub async fn ack(client: &Client, post_id: Option<i64>, json: bool) -> Result<()> {
+pub async fn ack(client: &Client, post_id: Option<i64>, fmt: Format) -> Result<()> {
     let last_seen = match post_id {
         Some(id) => id,
         // No id: jump to the newest post the board has.
         None => client.whoami().await?.latest_post,
     };
     let me = client.set_cursor(last_seen).await?;
-    if json {
-        output::print_json(&me);
-    } else {
-        println!("cursor at {}", me.cursor);
+    match fmt {
+        Format::Json => output::print_json(&me),
+        Format::Markdown => println!("Cursor at post **{}**.", me.cursor),
+        Format::Table => println!("cursor at {}", me.cursor),
     }
     Ok(())
 }

@@ -3,6 +3,7 @@
 use crate::api;
 use crate::cli::{NewArgs, ReplyArgs, ShowArgs, ThreadsArgs};
 use crate::client::error::{ClientError, Kind, Result};
+use crate::client::output::Format;
 use crate::client::{Client, output};
 use std::io::Read;
 
@@ -23,7 +24,7 @@ pub fn body_or_stdin(body: Option<&str>) -> Result<String> {
     Ok(buf)
 }
 
-pub async fn new(client: &Client, args: &NewArgs, json: bool) -> Result<()> {
+pub async fn new(client: &Client, args: &NewArgs, fmt: Format) -> Result<()> {
     let body = body_or_stdin(args.body.as_deref())?;
     let detail = client
         .create_thread(&api::NewThread {
@@ -32,26 +33,18 @@ pub async fn new(client: &Client, args: &NewArgs, json: bool) -> Result<()> {
             tags: args.tags.clone(),
         })
         .await?;
-    if json {
-        output::print_json(&detail);
-    } else {
-        output::thread_view(&detail);
-    }
+    output::thread_detail(&detail, fmt);
     Ok(())
 }
 
-pub async fn reply(client: &Client, args: &ReplyArgs, json: bool) -> Result<()> {
+pub async fn reply(client: &Client, args: &ReplyArgs, fmt: Format) -> Result<()> {
     let body = body_or_stdin(args.body.as_deref())?;
     let post = client.reply(args.thread_id, &body).await?;
-    if json {
-        output::print_json(&post);
-    } else {
-        output::post_view(&post);
-    }
+    output::post(&post, fmt);
     Ok(())
 }
 
-pub async fn list(client: &Client, args: &ThreadsArgs, json: bool) -> Result<()> {
+pub async fn list(client: &Client, args: &ThreadsArgs, fmt: Format) -> Result<()> {
     let status = match (args.open, args.closed) {
         (true, false) => Some("open"),
         (false, true) => Some("closed"),
@@ -61,30 +54,22 @@ pub async fn list(client: &Client, args: &ThreadsArgs, json: bool) -> Result<()>
         .list_threads(args.tag.as_deref(), status, args.limit, args.offset)
         .await?
         .threads;
-    if json {
-        output::print_jsonl(&threads);
-    } else {
-        output::threads_table(&threads);
-    }
+    output::threads(&threads, fmt);
     Ok(())
 }
 
-pub async fn show(client: &Client, args: &ShowArgs, json: bool) -> Result<()> {
+pub async fn show(client: &Client, args: &ShowArgs, fmt: Format) -> Result<()> {
     let detail = client.show_thread(args.thread_id, args.since).await?;
-    if json {
-        output::print_json(&detail);
-    } else {
-        output::thread_view(&detail);
-    }
+    output::thread_detail(&detail, fmt);
     Ok(())
 }
 
-pub async fn set_status(client: &Client, thread_id: i64, close: bool, json: bool) -> Result<()> {
+pub async fn set_status(client: &Client, thread_id: i64, close: bool, fmt: Format) -> Result<()> {
     let thread = client.set_thread_status(thread_id, close).await?;
-    if json {
-        output::print_json(&thread);
-    } else {
-        println!("thread #{} is now {}", thread.id, thread.status);
+    match fmt {
+        Format::Json => output::print_json(&thread),
+        Format::Markdown => println!("Thread **#{}** is now `{}`.", thread.id, thread.status),
+        Format::Table => println!("thread #{} is now {}", thread.id, thread.status),
     }
     Ok(())
 }

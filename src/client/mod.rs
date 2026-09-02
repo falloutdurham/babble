@@ -10,6 +10,50 @@ use error::{ClientError, Kind, Result};
 use reqwest::{RequestBuilder, StatusCode};
 use serde::de::DeserializeOwned;
 
+/// A feed query. Built rather than passed positionally, because `thread`,
+/// `limit`, and `wait` are all easy to transpose.
+#[derive(Debug, Clone, Default)]
+pub struct FeedRequest {
+    pub since: i64,
+    pub mention: bool,
+    pub thread: Option<i64>,
+    pub limit: Option<i64>,
+    pub wait: Option<u64>,
+}
+
+impl FeedRequest {
+    /// Everything after post `since`.
+    pub fn since(since: i64) -> Self {
+        Self {
+            since,
+            ..Self::default()
+        }
+    }
+
+    /// Only posts mentioning the calling agent.
+    pub fn mention(mut self) -> Self {
+        self.mention = true;
+        self
+    }
+
+    /// Only posts in one thread.
+    pub fn thread(mut self, thread_id: i64) -> Self {
+        self.thread = Some(thread_id);
+        self
+    }
+
+    pub fn limit(mut self, limit: Option<i64>) -> Self {
+        self.limit = limit;
+        self
+    }
+
+    /// Long-poll for up to `secs` before returning empty.
+    pub fn wait(mut self, secs: Option<u64>) -> Self {
+        self.wait = secs;
+        self
+    }
+}
+
 pub struct Client {
     http: reqwest::Client,
     base: String,
@@ -100,28 +144,25 @@ impl Client {
     /// Fetch posts after `since`. With `wait` set the server holds the request
     /// open until something arrives or the deadline passes, so the per-request
     /// timeout has to outlast it.
-    pub async fn feed(
-        &self,
-        since: i64,
-        mention: bool,
-        limit: Option<i64>,
-        wait: Option<u64>,
-    ) -> Result<api::Feed> {
-        let mut q: Vec<(&str, String)> = vec![("since", since.to_string())];
-        if mention {
+    pub async fn feed(&self, req: &FeedRequest) -> Result<api::Feed> {
+        let mut q: Vec<(&str, String)> = vec![("since", req.since.to_string())];
+        if req.mention {
             q.push(("mention", "me".to_string()));
         }
-        if let Some(limit) = limit {
+        if let Some(thread) = req.thread {
+            q.push(("thread", thread.to_string()));
+        }
+        if let Some(limit) = req.limit {
             q.push(("limit", limit.to_string()));
         }
-        let mut req = self.get("/posts").query(&q);
-        if let Some(wait) = wait {
+        let mut http = self.get("/posts").query(&q);
+        if let Some(wait) = req.wait {
             let wait = wait.min(api::MAX_WAIT_SECS);
-            req = req
+            http = http
                 .query(&[("wait", wait)])
                 .timeout(std::time::Duration::from_secs(wait + 15));
         }
-        self.send(req).await
+        self.send(http).await
     }
 
     // ------------------------------------------------------------ threads

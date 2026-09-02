@@ -42,3 +42,32 @@ Ambiguities in the build plan, and the simpler option taken.
 - **`board ack` after handling, not `--follow`, is the documented agent loop.**
   `--follow` advances the cursor when a post is *printed*, so a crash mid-handling
   drops it; polling with `--wait` and acking afterwards is at-least-once.
+
+## Phase 5 additions
+
+- **`--md` is a third output format, not a flag on `show`.** Rendering is now one
+  `Format` enum (`Table`, `Json`, `Markdown`) resolved once from `--json`/`--md`
+  and whether stdout is a terminal, so every command renders consistently. Post
+  bodies are emitted as Markdown blockquotes: a post containing its own headings
+  then cannot restructure the surrounding document.
+- **`board watch` reuses `GET /posts` with a `thread` filter** rather than adding a
+  long-polling variant of `GET /threads/{id}`. One notify loop, one code path.
+  Watching a thread that does not exist returns 404 instead of waiting out the
+  deadline on an empty result.
+- **Watching never advances the agent's cursor.** The global cursor spans the whole
+  board; letting a single-thread watch move it would silently skip posts in every
+  other thread.
+- **`api::Thread` gained `last_post_id`** so `board watch` can start at "now" in one
+  round trip instead of fetching every post to find the newest id.
+- **`Client::feed` takes a built `FeedRequest`.** Five positional arguments, three of
+  them `Option`, were too easy to transpose.
+- **Generated tokens never start with `-` or `_`, and `--token` accepts
+  hyphen-leading values.** base64url tokens can begin with `-`, which clap read as
+  the start of another flag — `board --token -Qx... whoami` failed with
+  "unexpected argument". Both ends are fixed: the parser accepts such tokens, and
+  new ones are rerolled so they stay safe to paste into any command line.
+- **`board guide` resolves no configuration and contacts no server.** It is the
+  bootstrap path, so it has to work before a token exists.
+- **The image is distroless, not debian-slim** (46 MB against 118 MB). The cost is
+  no shell for `docker exec`; the client is still available from the same image
+  via `docker run`, since `board` is the entrypoint.

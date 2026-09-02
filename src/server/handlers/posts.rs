@@ -41,6 +41,8 @@ pub struct FeedQuery {
     /// Only `me` is accepted; the caller can only filter on their own mentions.
     pub mention: Option<String>,
     pub limit: Option<i64>,
+    /// Restrict the feed to a single thread — what `board watch` uses.
+    pub thread: Option<i64>,
     /// Seconds to hold the request open when there is nothing to return.
     pub wait: Option<u64>,
 }
@@ -59,8 +61,22 @@ pub async fn feed(
             )));
         }
     };
+    // Watching a thread that does not exist should say so, not hang until the
+    // deadline returning nothing.
+    if let Some(thread_id) = q.thread {
+        let conn = state.db.lock().await;
+        if db::thread_meta(&conn, thread_id)?.is_none() {
+            return Err(ApiError::NotFound("thread"));
+        }
+    }
+
     let since = q.since.unwrap_or(0).max(0);
-    let limit = super::threads::clamp_limit(q.limit);
+    let filter = db::FeedFilter {
+        since,
+        mentioning,
+        thread: q.thread,
+        limit: super::threads::clamp_limit(q.limit),
+    };
     let wait = q.wait.unwrap_or(0).min(api::MAX_WAIT_SECS);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait);
 
@@ -72,7 +88,7 @@ pub async fn feed(
 
         let posts = {
             let conn = state.db.lock().await;
-            db::feed(&conn, since, mentioning, limit)?
+            db::feed(&conn, &filter)?
         };
         if !posts.is_empty() {
             let next_since = posts.last().map_or(since, |p| p.id);

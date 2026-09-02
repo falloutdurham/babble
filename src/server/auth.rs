@@ -10,9 +10,17 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
 /// A fresh 32-byte token, base64url encoded without padding.
+///
+/// A leading `-` or `_` is rerolled: such a token is a nuisance to paste into
+/// any command line, since it looks like the start of a flag.
 pub fn generate_token() -> String {
-    let bytes: [u8; 32] = rand::random();
-    URL_SAFE_NO_PAD.encode(bytes)
+    loop {
+        let bytes: [u8; 32] = rand::random();
+        let token = URL_SAFE_NO_PAD.encode(bytes);
+        if !token.starts_with(['-', '_']) {
+            return token;
+        }
+    }
 }
 
 /// The value stored in `agents.token_hash`. Tokens themselves are never
