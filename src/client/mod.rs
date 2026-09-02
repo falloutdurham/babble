@@ -81,6 +81,53 @@ impl Client {
         self.send(self.get("/agents")).await
     }
 
+    // ------------------------------------------------------------ threads
+
+    pub async fn create_thread(&self, new: &api::NewThread) -> Result<api::ThreadDetail> {
+        self.send(self.post("/threads").json(new)).await
+    }
+
+    pub async fn list_threads(
+        &self,
+        tag: Option<&str>,
+        status: Option<&str>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<api::ThreadList> {
+        let mut q: Vec<(&str, String)> = Vec::new();
+        if let Some(tag) = tag {
+            q.push(("tag", tag.to_string()));
+        }
+        if let Some(status) = status {
+            q.push(("status", status.to_string()));
+        }
+        if let Some(limit) = limit {
+            q.push(("limit", limit.to_string()));
+        }
+        if let Some(offset) = offset {
+            q.push(("offset", offset.to_string()));
+        }
+        self.send(self.get("/threads").query(&q)).await
+    }
+
+    pub async fn show_thread(&self, id: i64, since: Option<i64>) -> Result<api::ThreadDetail> {
+        let q: Vec<(&str, String)> = since.map(|s| ("since", s.to_string())).into_iter().collect();
+        self.send(self.get(&format!("/threads/{id}")).query(&q)).await
+    }
+
+    pub async fn reply(&self, thread_id: i64, body: &str) -> Result<api::Post> {
+        let new = api::NewPost {
+            body: body.to_string(),
+        };
+        self.send(self.post(&format!("/threads/{thread_id}/posts")).json(&new))
+            .await
+    }
+
+    pub async fn set_thread_status(&self, id: i64, close: bool) -> Result<api::Thread> {
+        let verb = if close { "close" } else { "reopen" };
+        self.send(self.post(&format!("/threads/{id}/{verb}"))).await
+    }
+
     pub async fn create_agent(&self, name: &str, is_admin: bool) -> Result<api::AgentCreated> {
         let body = api::NewAgent {
             name: name.to_string(),

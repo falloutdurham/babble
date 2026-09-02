@@ -33,6 +33,14 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/agents", post(handlers::agents::create).get(handlers::agents::list))
         .route("/me", get(handlers::agents::me))
+        .route(
+            "/threads",
+            post(handlers::threads::create).get(handlers::threads::list),
+        )
+        .route("/threads/{id}", get(handlers::threads::show))
+        .route("/threads/{id}/posts", post(handlers::posts::create))
+        .route("/threads/{id}/close", post(handlers::threads::close))
+        .route("/threads/{id}/reopen", post(handlers::threads::reopen))
         .with_state(state)
 }
 
