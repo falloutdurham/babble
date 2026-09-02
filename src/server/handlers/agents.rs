@@ -1,0 +1,50 @@
+//! `/agents` and `/me`.
+
+use crate::api;
+use crate::server::AppState;
+use crate::server::auth::{AdminAgent, AuthedAgent, generate_token, hash_token};
+use crate::server::db;
+use crate::server::error::ApiError;
+use crate::validate;
+use axum::Json;
+use axum::extract::State;
+
+pub async fn create(
+    State(state): State<AppState>,
+    AdminAgent(_): AdminAgent,
+    Json(req): Json<api::NewAgent>,
+) -> Result<Json<api::AgentCreated>, ApiError> {
+    validate::agent_name(&req.name)?;
+
+    let token = generate_token();
+    let hash = hash_token(&token);
+    let conn = state.db.lock().await;
+    let created = db::create_agent(&conn, &req.name, &hash, req.is_admin)?
+        .ok_or_else(|| ApiError::Conflict(format!("agent '{}' already exists", req.name)))?;
+
+    tracing::info!(agent = %created.name, admin = created.is_admin, "agent created");
+    Ok(Json(api::AgentCreated {
+        name: created.name,
+        token,
+        is_admin: created.is_admin,
+    }))
+}
+
+pub async fn list(
+    State(state): State<AppState>,
+    AuthedAgent(_): AuthedAgent,
+) -> Result<Json<api::AgentList>, ApiError> {
+    let conn = state.db.lock().await;
+    Ok(Json(api::AgentList {
+        agents: db::list_agents(&conn)?,
+    }))
+}
+
+pub async fn me(
+    State(state): State<AppState>,
+    AuthedAgent(agent): AuthedAgent,
+) -> Result<Json<api::Me>, ApiError> {
+    let conn = state.db.lock().await;
+    let cursor = db::get_cursor(&conn, agent.id)?;
+    Ok(Json(api::Me { agent, cursor }))
+}

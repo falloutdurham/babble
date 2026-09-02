@@ -1,5 +1,6 @@
 mod api;
 mod cli;
+mod client;
 mod mentions;
 mod server;
 mod validate;
@@ -17,8 +18,15 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    match cli.command {
-        Command::Serve(args) => server::run(args).await,
-        _ => todo!("client commands land in phase 1"),
+    if let Command::Serve(args) = cli.command {
+        return server::run(args).await;
     }
+
+    // Client commands map their failure onto a documented exit code rather
+    // than bubbling up as an anyhow backtrace.
+    if let Err(e) = client::commands::run(cli).await {
+        eprintln!("board: {e}");
+        std::process::exit(e.kind.exit_code());
+    }
+    Ok(())
 }
