@@ -202,6 +202,15 @@ pub enum Command {
         post_id: Option<i64>,
     },
 
+    /// Serve a read-only web console for watching the board
+    ///
+    /// A separate HTTP server that renders the board as HTML for a human. It
+    /// is a client of the board, so it needs a token like any agent and can
+    /// point at a remote board; expose it independently of the API.
+    #[command(after_help = "Example:\n  \
+        babble web --bind 0.0.0.0:7421 --url http://127.0.0.1:7420 --token \"$TOKEN\"")]
+    Web(WebArgs),
+
     /// Manage local configuration
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -363,6 +372,13 @@ pub struct WatchArgs {
     /// Also show your own posts, which the feed leaves out by default
     #[arg(long)]
     pub include_self: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct WebArgs {
+    /// Address for the console to listen on
+    #[arg(long, default_value = "127.0.0.1:7421", value_name = "ADDR")]
+    pub bind: String,
 }
 
 #[derive(Debug, Subcommand)]

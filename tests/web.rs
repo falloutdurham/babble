@@ -1,0 +1,323 @@
+//! Tests for the operator console. A real board and a real console are started
+//! in-process, and the console is driven over HTTP like a browser would.
+
+use babble::cli::ServeArgs;
+use babble::client::Client;
+use babble::client::config::Resolved;
+use babble::{api, server, web};
+use std::time::{Duration, Instant};
+
+const ADMIN: &str = "test-admin-token";
+
+struct Harness {
+    board: String,
+    console: String,
+    _dir: tempfile::TempDir,
+}
+
+impl Harness {
+    async fn start() -> Harness {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let args = ServeArgs {
+            db: dir.path().join("b.sqlite").to_string_lossy().into_owned(),
+            bind: "127.0.0.1:0".into(),
+            admin_token: Some(ADMIN.into()),
+            post_rate: 0,
+        };
+        let (listener, state) = server::bind(&args).await.expect("bind board");
+        let board = format!("http://{}", listener.local_addr().expect("addr"));
+        tokio::spawn(async move {
+            let _ = server::serve(listener, state, std::future::pending()).await;
+        });
+
+        let console_client = Client::new(Resolved {
+            url: board.clone(),
+            token: ADMIN.into(),
+        })
+        .expect("console client");
+        let state = web::Console::new(console_client, board.clone(), "admin".into()).wait_secs(2);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind console");
+        let console = format!("http://{}", listener.local_addr().expect("addr"));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, web::router(state)).await;
+        });
+
+        Harness {
+            board,
+            console,
+            _dir: dir,
+        }
+    }
+
+    fn client(&self, token: &str) -> Client {
+        Client::new(Resolved {
+            url: self.board.clone(),
+            token: token.to_string(),
+        })
+        .expect("client")
+    }
+
+    async fn agent(&self, name: &str) -> Client {
+        let created = self
+            .client(ADMIN)
+            .create_agent(name, false)
+            .await
+            .expect("agent");
+        self.client(&created.token)
+    }
+
+    async fn get(&self, path: &str) -> (reqwest::StatusCode, String) {
+        let r = reqwest::get(format!("{}{}", self.console, path))
+            .await
+            .expect("request");
+        (r.status(), r.text().await.expect("body"))
+    }
+}
+
+fn new_thread(title: &str, body: &str, tags: &[&str]) -> api::NewThread {
+    api::NewThread {
+        title: title.into(),
+        body: body.into(),
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+    }
+}
+
+#[tokio::test]
+async fn the_console_lists_threads_and_links_to_them() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("Deploy plan", "rolling out", &["ops"]))
+        .await
+        .unwrap();
+
+    let (status, html) = h.get("/").await;
+    assert!(status.is_success());
+    assert!(html.contains("Deploy plan"));
+    assert!(html.contains(r#"href="/t/1""#));
+    assert!(html.contains("alice"));
+    assert!(html.contains("ops"));
+}
+
+#[tokio::test]
+async fn filters_narrow_the_thread_list() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let open = alice
+        .create_thread(&new_thread("still open", "b", &["ops"]))
+        .await
+        .unwrap();
+    alice
+        .create_thread(&new_thread("other tag", "b", &["docs"]))
+        .await
+        .unwrap();
+    let shut = alice
+        .create_thread(&new_thread("all done", "b", &["ops"]))
+        .await
+        .unwrap();
+    alice.set_thread_status(shut.thread.id, true).await.unwrap();
+
+    let (_, by_tag) = h.get("/?tag=ops").await;
+    assert!(by_tag.contains("still open"));
+    assert!(!by_tag.contains("other tag"));
+
+    let (_, by_status) = h.get("/?status=open").await;
+    assert!(by_status.contains("still open"));
+    assert!(!by_status.contains("all done"));
+    let _ = open;
+}
+
+#[tokio::test]
+async fn a_thread_page_shows_every_post_and_a_live_tail() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+    let t = alice
+        .create_thread(&new_thread("chat", "first post", &[]))
+        .await
+        .unwrap();
+    bob.reply(t.thread.id, "second post").await.unwrap();
+
+    let (status, html) = h.get("/t/1").await;
+    assert!(status.is_success());
+    assert!(html.contains("first post"));
+    assert!(html.contains("second post"));
+    // The tail resumes from the newest post, not from zero.
+    assert!(html.contains(r#"hx-get="/p/thread/1?since=2""#), "{html}");
+}
+
+#[tokio::test]
+async fn the_live_page_shows_posts_from_every_thread() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("one", "in thread one", &[]))
+        .await
+        .unwrap();
+    alice
+        .create_thread(&new_thread("two", "in thread two", &[]))
+        .await
+        .unwrap();
+
+    let (status, html) = h.get("/live").await;
+    assert!(status.is_success());
+    assert!(html.contains("in thread one"));
+    assert!(html.contains("in thread two"));
+    assert!(html.contains(r#"hx-get="/p/feed?since=2""#), "{html}");
+}
+
+#[tokio::test]
+async fn the_console_shows_the_operators_own_posts() {
+    // An agent's feed hides its own posts; a console is a record and must not.
+    let h = Harness::start().await;
+    let admin = h.client(ADMIN);
+    admin
+        .create_thread(&new_thread("by the console's own identity", "mine", &[]))
+        .await
+        .unwrap();
+
+    let (_, html) = h.get("/live").await;
+    assert!(html.contains("mine"), "console hid the operator's own post");
+}
+
+#[tokio::test]
+async fn the_tail_returns_the_moment_a_post_lands() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("t", "first", &[]))
+        .await
+        .unwrap();
+    let thread_id = t.thread.id;
+
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        alice.reply(thread_id, "it arrived").await.expect("reply");
+    });
+
+    let started = Instant::now();
+    let (status, html) = h.get("/p/thread/1?since=1").await;
+    assert!(status.is_success());
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "tail did not wake"
+    );
+    assert!(html.contains("it arrived"));
+    // ...and hands back a tail pointing past what it just delivered.
+    assert!(html.contains(r#"hx-get="/p/thread/1?since=2""#), "{html}");
+}
+
+#[tokio::test]
+async fn the_tail_holds_its_position_when_nothing_arrives() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("quiet", "nothing more", &[]))
+        .await
+        .unwrap();
+
+    // The board caps `wait`, so this returns on its own; assert it does not
+    // silently rewind the cursor when it times out.
+    let (status, html) = h.get("/p/feed?since=1").await;
+    assert!(status.is_success());
+    assert!(html.contains(r#"hx-get="/p/feed?since=1""#), "{html}");
+}
+
+#[tokio::test]
+async fn post_bodies_cannot_inject_markup_into_the_console() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread(
+            "<script>alert('title')</script>",
+            "<img src=x onerror=alert('body')> hello @bob",
+            &[],
+        ))
+        .await
+        .unwrap();
+
+    for path in ["/", "/t/1", "/live"] {
+        let (_, html) = h.get(path).await;
+        assert!(!html.contains("<script>alert"), "unescaped title on {path}");
+        assert!(!html.contains("<img src=x"), "unescaped body on {path}");
+        assert!(html.contains("&lt;"), "nothing was escaped on {path}");
+    }
+}
+
+#[tokio::test]
+async fn agents_are_listed_without_tokens() {
+    let h = Harness::start().await;
+    h.agent("alice").await;
+
+    let (status, html) = h.get("/agents").await;
+    assert!(status.is_success());
+    assert!(html.contains("alice"));
+    assert!(html.contains("admin"));
+    assert!(!html.contains("token"), "console leaked a token field");
+}
+
+#[tokio::test]
+async fn htmx_is_served_locally_not_from_a_cdn() {
+    let h = Harness::start().await;
+    let (status, js) = h.get("/static/htmx.js").await;
+    assert!(status.is_success());
+    assert!(js.contains("htmx"));
+
+    let (_, html) = h.get("/").await;
+    assert!(html.contains(r#"src="/static/htmx.js""#));
+    assert!(
+        !html.contains("cdnjs"),
+        "console pulls htmx from the network"
+    );
+}
+
+#[tokio::test]
+async fn every_page_is_readable_without_javascript() {
+    // htmx only drives the tail; navigation is plain links.
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("plain", "body text", &[]))
+        .await
+        .unwrap();
+
+    for path in ["/", "/t/1", "/live", "/agents"] {
+        let (status, html) = h.get(path).await;
+        assert!(status.is_success(), "{path} failed");
+        assert!(html.starts_with("<!doctype html>"), "{path} is not a page");
+        assert!(html.contains("</html>"), "{path} was truncated");
+    }
+}
+
+#[tokio::test]
+async fn a_dead_board_degrades_instead_of_five_hundreding() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let _ = &dir;
+    // Point a console at a port with nothing on it.
+    let client = Client::new(Resolved {
+        url: "http://127.0.0.1:1".into(),
+        token: ADMIN.into(),
+    })
+    .expect("client");
+    let state = web::Console::new(client, "http://127.0.0.1:1".into(), "admin".into()).wait_secs(2);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, web::router(state)).await;
+    });
+
+    let r = reqwest::get(format!("{base}/")).await.expect("request");
+    assert_eq!(r.status(), reqwest::StatusCode::BAD_GATEWAY);
+    let html = r.text().await.unwrap();
+    assert!(html.contains("Cannot reach the board"));
+
+    // The tail keeps retrying rather than dying.
+    let r = reqwest::get(format!("{base}/p/feed?since=7"))
+        .await
+        .expect("request");
+    let html = r.text().await.unwrap();
+    assert!(html.contains("retrying"));
+    assert!(html.contains("since=7"), "tail lost its position on error");
+}

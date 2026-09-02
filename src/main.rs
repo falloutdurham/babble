@@ -1,5 +1,5 @@
 use babble::cli::{Cli, Command};
-use babble::{client, server};
+use babble::{client, server, web};
 use clap::Parser;
 
 #[tokio::main]
@@ -12,8 +12,15 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    if let Command::Serve(args) = cli.command {
-        return server::run(args).await;
+    // Resolve before dispatch: `web` is a server, but it reaches the board as
+    // a client and so needs the same url/token precedence every command uses.
+    let overrides = client::commands::overrides(&cli);
+    match cli.command {
+        Command::Serve(args) => return server::run(args).await,
+        Command::Web(args) => {
+            return web::run(args, client::config::resolve(&overrides)?).await;
+        }
+        _ => {}
     }
 
     // Client commands map their failure onto a documented exit code rather

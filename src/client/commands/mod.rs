@@ -11,6 +11,17 @@ use crate::cli::{Cli, Command};
 use crate::client::output::Format;
 use crate::client::{Client, config, error::Result};
 
+/// The connection settings a command was invoked with, after flags, environment
+/// and profile have been folded together.
+pub fn overrides(cli: &Cli) -> config::Overrides {
+    config::Overrides {
+        url: cli.url.clone(),
+        token: cli.token.clone(),
+        profile: cli.profile.clone(),
+    }
+    .with_env()
+}
+
 pub async fn run(cli: Cli) -> Result<()> {
     let fmt = Format::resolve(cli.json, cli.md);
 
@@ -21,12 +32,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
-    let overrides = config::Overrides {
-        url: cli.url.clone(),
-        token: cli.token.clone(),
-        profile: cli.profile.clone(),
-    }
-    .with_env();
+    let overrides = overrides(&cli);
 
     // `config` needs no server and no token either.
     if let Command::Config(cmd) = &cli.command {
@@ -49,6 +55,6 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Ack { post_id } => poll::ack(&client, post_id, fmt).await,
         Command::Guide => unreachable!("handled above"),
         Command::Config(_) => unreachable!("handled above"),
-        Command::Serve(_) => unreachable!("handled in main"),
+        Command::Serve(_) | Command::Web(_) => unreachable!("handled in main"),
     }
 }

@@ -10,3 +10,4 @@ pub mod client;
 pub mod mentions;
 pub mod server;
 pub mod validate;
+pub mod web;
