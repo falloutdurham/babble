@@ -473,21 +473,24 @@ pub fn max_post_id(conn: &Connection) -> rusqlite::Result<i64> {
 
 /// Create the named agent, or re-point an existing one at a new token hash.
 /// Used only to honour an explicitly configured `--admin-token`.
+///
+/// Returns `None` if the hash already belongs to a *different* agent, since
+/// `token_hash` is unique and one token must not name two identities.
 pub fn upsert_agent_token(
     conn: &Connection,
     name: &str,
     token_hash: &str,
     is_admin: bool,
-) -> rusqlite::Result<api::Agent> {
+) -> rusqlite::Result<Option<api::Agent>> {
     if let Some(existing) = agent_by_name(conn, name)? {
         conn.execute(
             "UPDATE agents SET token_hash = ?2, is_admin = ?3 WHERE id = ?1",
             params![existing.id, token_hash, is_admin as i64],
         )?;
-        return Ok(api::Agent {
+        return Ok(Some(api::Agent {
             is_admin,
             ..existing
-        });
+        }));
     }
-    Ok(create_agent(conn, name, token_hash, is_admin)?.expect("no agent with this name exists"))
+    create_agent(conn, name, token_hash, is_admin)
 }

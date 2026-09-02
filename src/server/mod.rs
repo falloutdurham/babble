@@ -77,13 +77,15 @@ pub fn bootstrap_admin(conn: &Connection, admin_token: Option<&str>) -> Result<(
         Some(token) => {
             let hash = auth::hash_token(token);
             if db::agent_by_token_hash(conn, &hash)?.is_none() {
-                let agent = db::upsert_agent_token(conn, ADMIN_AGENT, &hash, true)?;
+                let agent = db::upsert_agent_token(conn, ADMIN_AGENT, &hash, true)?
+                    .context("the configured admin token is already in use")?;
                 tracing::info!(agent = %agent.name, "configured admin token");
             }
         }
         None if db::agent_count(conn)? == 0 => {
             let token = auth::generate_token();
-            db::upsert_agent_token(conn, ADMIN_AGENT, &auth::hash_token(&token), true)?;
+            db::upsert_agent_token(conn, ADMIN_AGENT, &auth::hash_token(&token), true)?
+                .context("could not create the bootstrap admin agent")?;
             // Printed, never logged — this is the only time it exists in plaintext.
             println!("first run: created admin agent '{ADMIN_AGENT}'");
             println!("admin token: {token}");
