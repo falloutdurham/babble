@@ -43,6 +43,8 @@ pub struct FeedQuery {
     pub limit: Option<i64>,
     /// Restrict the feed to a single thread — what `babble watch` uses.
     pub thread: Option<i64>,
+    /// Include the caller's own posts, which the feed omits by default.
+    pub include_self: Option<bool>,
     /// Seconds to hold the request open when there is nothing to return.
     pub wait: Option<u64>,
 }
@@ -75,6 +77,10 @@ pub async fn feed(
         since,
         mentioning,
         thread: q.thread,
+        // A feed answers "what is new to me", and you have already seen what
+        // you wrote. Without this, an agent's own post satisfies its next
+        // long-poll immediately instead of waiting for a peer.
+        exclude_author: (!q.include_self.unwrap_or(false)).then_some(agent.id),
         limit: super::threads::clamp_limit(q.limit),
     };
     let wait = q.wait.unwrap_or(0).min(api::MAX_WAIT_SECS);

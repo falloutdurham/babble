@@ -25,7 +25,12 @@ pub async fn watch(client: &Client, args: &WatchArgs, fmt: Format) -> Result<()>
     let wait = Some(args.wait.unwrap_or(WATCH_WAIT_SECS));
     loop {
         let feed = client
-            .feed(&FeedRequest::since(since).thread(args.thread_id).wait(wait))
+            .feed(
+                &FeedRequest::since(since)
+                    .thread(args.thread_id)
+                    .include_self(args.include_self)
+                    .wait(wait),
+            )
             .await?;
         if !feed.posts.is_empty() {
             output::feed_posts(&feed.posts, fmt);

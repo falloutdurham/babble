@@ -421,6 +421,7 @@ async fn mentions_resolve_known_agents_and_ignore_the_rest() {
 async fn the_feed_pages_forward_from_since() {
     let h = Harness::start().await;
     let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
     let t = alice
         .create_thread(&new_thread("t", "one", &[]))
         .await
@@ -428,7 +429,7 @@ async fn the_feed_pages_forward_from_since() {
     alice.reply(t.thread.id, "two").await.unwrap();
     alice.reply(t.thread.id, "three").await.unwrap();
 
-    let first = alice
+    let first = bob
         .feed(&FeedRequest::since(0).limit(Some(2)))
         .await
         .unwrap();
@@ -436,7 +437,7 @@ async fn the_feed_pages_forward_from_since() {
     assert_eq!(first.next_since, 2);
     assert_eq!(first.posts[0].thread_title, "t");
 
-    let rest = alice
+    let rest = bob
         .feed(&FeedRequest::since(first.next_since).limit(Some(2)))
         .await
         .unwrap();
@@ -444,7 +445,7 @@ async fn the_feed_pages_forward_from_since() {
     assert_eq!(rest.posts[0].body, "three");
 
     // Nothing left: next_since holds its position.
-    let empty = alice
+    let empty = bob
         .feed(&FeedRequest::since(rest.next_since))
         .await
         .unwrap();
@@ -525,13 +526,14 @@ async fn a_long_poll_times_out_empty_and_successful() {
 async fn a_waiting_poll_still_returns_existing_posts_immediately() {
     let h = Harness::start().await;
     let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
     alice
         .create_thread(&new_thread("t", "already here", &[]))
         .await
         .unwrap();
 
     let started = Instant::now();
-    let feed = alice
+    let feed = bob
         .feed(&FeedRequest::since(0).wait(Some(30)))
         .await
         .unwrap();
@@ -632,7 +634,11 @@ async fn ten_agents_posting_at_once_lose_nothing() {
 
     // And the feed sees the same set.
     let feed = alice
-        .feed(&FeedRequest::since(0).limit(Some(api::MAX_LIMIT)))
+        .feed(
+            &FeedRequest::since(0)
+                .include_self(true)
+                .limit(Some(api::MAX_LIMIT)),
+        )
         .await
         .unwrap();
     assert_eq!(feed.posts.len(), AGENTS * EACH + 1);
@@ -661,6 +667,7 @@ async fn a_thread_reports_its_newest_post_id() {
 async fn the_feed_can_be_scoped_to_one_thread() {
     let h = Harness::start().await;
     let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
 
     let a = alice
         .create_thread(&new_thread("a", "in a", &[]))
@@ -672,14 +679,14 @@ async fn the_feed_can_be_scoped_to_one_thread() {
         .unwrap();
     alice.reply(a.thread.id, "also in a").await.unwrap();
 
-    let scoped = alice
+    let scoped = bob
         .feed(&FeedRequest::since(0).thread(a.thread.id))
         .await
         .unwrap();
     assert_eq!(scoped.posts.len(), 2);
     assert!(scoped.posts.iter().all(|p| p.thread_id == a.thread.id));
 
-    let other = alice
+    let other = bob
         .feed(&FeedRequest::since(0).thread(b.thread.id))
         .await
         .unwrap();
@@ -755,4 +762,54 @@ async fn watching_does_not_move_the_global_cursor() {
         .await
         .unwrap();
     assert_eq!(bob.whoami().await.unwrap().cursor, 0);
+}
+
+#[tokio::test]
+async fn the_feed_leaves_out_your_own_posts_unless_asked() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+
+    let t = alice
+        .create_thread(&new_thread("t", "mine", &[]))
+        .await
+        .unwrap();
+    bob.reply(t.thread.id, "theirs").await.unwrap();
+
+    // Alice sees only bob's reply, not her own opening post.
+    let mine = alice.feed(&FeedRequest::since(0)).await.unwrap();
+    assert_eq!(mine.posts.len(), 1);
+    assert_eq!(mine.posts[0].author, "bob");
+
+    // ...and can ask for the full record.
+    let all = alice
+        .feed(&FeedRequest::since(0).include_self(true))
+        .await
+        .unwrap();
+    assert_eq!(all.posts.len(), 2);
+
+    // The thread view is a record, not a feed: it always shows everything.
+    let detail = alice.show_thread(t.thread.id, None).await.unwrap();
+    assert_eq!(detail.posts.len(), 2);
+}
+
+#[tokio::test]
+async fn your_own_post_does_not_satisfy_your_own_long_poll() {
+    // The bug five survey agents hit: post, then `poll --wait` returns your own
+    // message instantly instead of waiting for a peer.
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+
+    alice
+        .create_thread(&new_thread("t", "hello?", &[]))
+        .await
+        .unwrap();
+
+    let started = Instant::now();
+    let feed = alice
+        .feed(&FeedRequest::since(0).wait(Some(1)))
+        .await
+        .unwrap();
+    assert!(feed.posts.is_empty(), "own post satisfied own long-poll");
+    assert!(started.elapsed() >= Duration::from_millis(900));
 }

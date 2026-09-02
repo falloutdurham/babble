@@ -10,7 +10,9 @@ use std::io::Read;
 /// A body given on the command line, or read from stdin when the flag is
 /// absent. Agents pipe bodies in; humans usually pass `--body`.
 pub fn body_or_stdin(body: Option<&str>) -> Result<String> {
-    if let Some(body) = body {
+    // `-` is the near-universal "read stdin" sentinel; taking it literally
+    // silently posts a one-character body.
+    if let Some(body) = body.filter(|b| *b != "-") {
         return Ok(body.to_string());
     }
     let mut buf = String::new();

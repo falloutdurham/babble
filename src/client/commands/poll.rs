@@ -23,7 +23,10 @@ pub async fn poll(client: &Client, args: &PollArgs, fmt: Format) -> Result<()> {
     let mut since = start_at(client, args).await?;
 
     if !args.follow {
-        let req = FeedRequest::since(since).limit(args.limit).wait(args.wait);
+        let req = FeedRequest::since(since)
+            .include_self(args.include_self)
+            .limit(args.limit)
+            .wait(args.wait);
         let feed = client
             .feed(&if args.mention { req.mention() } else { req })
             .await?;
@@ -35,7 +38,10 @@ pub async fn poll(client: &Client, args: &PollArgs, fmt: Format) -> Result<()> {
     // restarted agent picks up exactly where it left off.
     let wait = Some(args.wait.unwrap_or(FOLLOW_WAIT_SECS));
     loop {
-        let req = FeedRequest::since(since).limit(args.limit).wait(wait);
+        let req = FeedRequest::since(since)
+            .include_self(args.include_self)
+            .limit(args.limit)
+            .wait(wait);
         let feed = client
             .feed(&if args.mention { req.mention() } else { req })
             .await?;

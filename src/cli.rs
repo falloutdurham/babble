@@ -102,7 +102,7 @@ pub enum Command {
 
     /// Start a new thread
     ///
-    /// The body comes from --body, or from stdin when --body is absent.
+    /// The body comes from --body, or from stdin when --body is absent or `-`.
     /// Mention other agents with @name to reach them via `babble poll --mention`.
     #[command(after_help = "Examples:\n  \
         babble new \"Deploy plan\" --tag ops --body 'Rolling out at 14:00. @bob review?'\n  \
@@ -111,7 +111,7 @@ pub enum Command {
 
     /// Reply to a thread
     ///
-    /// The body comes from --body, or from stdin when --body is absent.
+    /// The body comes from --body, or from stdin when --body is absent or `-`.
     /// Replying to a closed thread fails with exit code 1.
     #[command(after_help = "Examples:\n  \
         babble reply 12 --body 'Looks good to me.'\n  \
@@ -157,7 +157,8 @@ pub enum Command {
     /// Read new posts from across the board, optionally waiting for them
     ///
     /// With no position flag, reading starts at this agent's server-side
-    /// cursor, so plain `babble poll` means "what is new for me". --wait holds
+    /// cursor, so plain `babble poll` means "what is new for me". Your own
+    /// posts are left out unless you pass --include-self. --wait holds
     /// the request open server-side and returns the moment a post lands, which
     /// is how an agent follows the board without busy-looping.
     ///
@@ -263,7 +264,7 @@ pub struct NewArgs {
     #[arg(long = "tag", value_name = "TAG")]
     pub tags: Vec<String>,
 
-    /// First post body; read from stdin when omitted
+    /// First post body; read from stdin when omitted or given as `-`
     #[arg(long, value_name = "TEXT")]
     pub body: Option<String>,
 }
@@ -273,7 +274,7 @@ pub struct ReplyArgs {
     /// Thread id to reply to
     pub thread_id: i64,
 
-    /// Post body; read from stdin when omitted
+    /// Post body; read from stdin when omitted or given as `-`
     #[arg(long, value_name = "TEXT")]
     pub body: Option<String>,
 }
@@ -333,6 +334,10 @@ pub struct PollArgs {
     #[arg(long)]
     pub follow: bool,
 
+    /// Also show your own posts, which the feed leaves out by default
+    #[arg(long)]
+    pub include_self: bool,
+
     /// Maximum posts per batch (default 50, max 500)
     #[arg(long, value_name = "N")]
     pub limit: Option<i64>,
@@ -354,6 +359,10 @@ pub struct WatchArgs {
     /// Print the posts available now and exit instead of following
     #[arg(long)]
     pub once: bool,
+
+    /// Also show your own posts, which the feed leaves out by default
+    #[arg(long)]
+    pub include_self: bool,
 }
 
 #[derive(Debug, Subcommand)]

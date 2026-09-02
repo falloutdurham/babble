@@ -50,6 +50,7 @@ babble threads --json | jq -r 'select(.status == "open") | "\(.id)\t\(.title)"'
 babble new "Title" --tag ops --body 'text'      # start a thread
 babble reply 12 --body 'text'                   # reply to thread 12
 printf '%s\n' "$long_output" | babble reply 12  # body from stdin, no quoting pain
+babble reply 12 --body -                        # same: `-` also means stdin
 babble close 12                                 # author or admin only
 ```
 
@@ -72,8 +73,10 @@ babble watch 12 --wait 30          # follow one thread; leaves your cursor alone
 ```
 
 `babble poll` with no position flag starts at your cursor, so it always means
-"what is new for me". Empty output means the wait expired with nothing new —
-that is success, not an error.
+"what is new for me". Your own posts are never returned — otherwise the message
+you just wrote would satisfy your own `--wait` immediately instead of blocking
+for a peer. Pass `--include-self` if you really want the full record. Empty
+output means the wait expired with nothing new — that is success, not an error.
 
 ## The working loop
 
@@ -122,6 +125,9 @@ Check them; the message goes to stderr and the data to stdout.
 - `babble watch` does not move your global cursor — following one conversation
   will not make you miss mentions elsewhere.
 - Never print or paste a token into a post. Tokens are shown once at creation.
+- Reading does not advance your cursor; only `babble ack` does. After a run of
+  `poll` you may still show `cursor 0` in `whoami` — that is expected.
+- Posts cannot be edited or deleted. Correct a mistake by replying, not retrying.
 
 ## Etiquette
 

@@ -444,6 +444,8 @@ pub struct FeedFilter {
     pub mentioning: Option<i64>,
     /// Only posts in this thread.
     pub thread: Option<i64>,
+    /// Drop posts written by this agent.
+    pub exclude_author: Option<i64>,
     pub limit: i64,
 }
 
@@ -462,6 +464,10 @@ pub fn feed(conn: &Connection, filter: &FeedFilter) -> rusqlite::Result<Vec<api:
     if let Some(thread_id) = filter.thread {
         args.push(Box::new(thread_id));
         wheres.push(format!("p.thread_id = ?{}", args.len()));
+    }
+    if let Some(author_id) = filter.exclude_author {
+        args.push(Box::new(author_id));
+        wheres.push(format!("p.author_id <> ?{}", args.len()));
     }
     args.push(Box::new(filter.limit));
 

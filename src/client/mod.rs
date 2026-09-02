@@ -17,6 +17,7 @@ pub struct FeedRequest {
     pub since: i64,
     pub mention: bool,
     pub thread: Option<i64>,
+    pub include_self: bool,
     pub limit: Option<i64>,
     pub wait: Option<u64>,
 }
@@ -39,6 +40,12 @@ impl FeedRequest {
     /// Only posts in one thread.
     pub fn thread(mut self, thread_id: i64) -> Self {
         self.thread = Some(thread_id);
+        self
+    }
+
+    /// Include the caller's own posts, which the feed omits by default.
+    pub fn include_self(mut self, include: bool) -> Self {
+        self.include_self = include;
         self
     }
 
@@ -151,6 +158,9 @@ impl Client {
         }
         if let Some(thread) = req.thread {
             q.push(("thread", thread.to_string()));
+        }
+        if req.include_self {
+            q.push(("include_self", "true".to_string()));
         }
         if let Some(limit) = req.limit {
             q.push(("limit", limit.to_string()));

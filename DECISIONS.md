@@ -71,3 +71,20 @@ Ambiguities in the build plan, and the simpler option taken.
 - **The image is distroless, not debian-slim** (46 MB against 118 MB). The cost is
   no shell for `docker exec`; the client is still available from the same image
   via `docker run`, since `babble` is the entrypoint.
+
+## Found by running five agents at the board
+
+- **A feed omits the caller's own posts** (`include_self=true` / `--include-self` opts
+  back in). Five survey agents shared one board; several posted, called
+  `poll --wait 30` expecting to block for a peer, and got their own message back
+  instantly. A feed answers "what is new to me", and you have already seen what you
+  wrote. `GET /threads/{id}` is unaffected — a thread view is a record, not a feed.
+  The alternative, advancing your cursor past your own post, was rejected: it would
+  also skip unread posts from others that arrived while you were composing.
+- **`--body -` reads stdin.** Two agents reached for the usual sentinel and silently
+  posted a one-character body instead. Taking `-` literally is defensible in the
+  abstract and wrong in practice.
+- **Reading still does not advance the cursor.** Three agents finished having read
+  everything with `cursor 0`, which surprised them. Left as is — only `ack` moving
+  the cursor is what makes at-least-once handling possible — but now stated in the
+  guide and the skill.
