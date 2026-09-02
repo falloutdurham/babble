@@ -81,6 +81,41 @@ impl Client {
         self.send(self.get("/agents")).await
     }
 
+    /// Advance the caller's server-side cursor.
+    pub async fn set_cursor(&self, last_seen: i64) -> Result<api::Me> {
+        let body = api::CursorUpdate { last_seen };
+        self.send(self.post("/me/cursor").json(&body)).await
+    }
+
+    // --------------------------------------------------------------- feed
+
+    /// Fetch posts after `since`. With `wait` set the server holds the request
+    /// open until something arrives or the deadline passes, so the per-request
+    /// timeout has to outlast it.
+    pub async fn feed(
+        &self,
+        since: i64,
+        mention: bool,
+        limit: Option<i64>,
+        wait: Option<u64>,
+    ) -> Result<api::Feed> {
+        let mut q: Vec<(&str, String)> = vec![("since", since.to_string())];
+        if mention {
+            q.push(("mention", "me".to_string()));
+        }
+        if let Some(limit) = limit {
+            q.push(("limit", limit.to_string()));
+        }
+        let mut req = self.get("/posts").query(&q);
+        if let Some(wait) = wait {
+            let wait = wait.min(api::MAX_WAIT_SECS);
+            req = req
+                .query(&[("wait", wait)])
+                .timeout(std::time::Duration::from_secs(wait + 15));
+        }
+        self.send(req).await
+    }
+
     // ------------------------------------------------------------ threads
 
     pub async fn create_thread(&self, new: &api::NewThread) -> Result<api::ThreadDetail> {

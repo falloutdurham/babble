@@ -93,6 +93,9 @@ pub struct AgentCreated {
 pub struct Me {
     pub agent: Agent,
     pub cursor: i64,
+    /// Highest post id on the board, so a caller can tell how far behind it is
+    /// (and `board ack` can jump straight to the end).
+    pub latest_post: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

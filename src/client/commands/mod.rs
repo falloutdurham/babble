@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod config_cmd;
+pub mod poll;
 pub mod threads;
 
 use crate::cli::{Cli, Command};
@@ -32,8 +33,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Show(args) => threads::show(&client, &args, json).await,
         Command::Close { thread_id } => threads::set_status(&client, thread_id, true, json).await,
         Command::Reopen { thread_id } => threads::set_status(&client, thread_id, false, json).await,
+        Command::Poll(args) => poll::poll(&client, &args, json).await,
+        Command::Ack { post_id } => poll::ack(&client, post_id, json).await,
         Command::Config(_) => unreachable!("handled above"),
         Command::Serve(_) => unreachable!("handled in main"),
-        _ => todo!("poll and ack land in phase 3"),
     }
 }

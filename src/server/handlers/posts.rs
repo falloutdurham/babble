@@ -31,3 +31,63 @@ pub async fn create(
     tracing::info!(post = post.id, thread = thread_id, author = %agent.name, "post created");
     Ok(Json(post))
 }
+
+#[derive(Debug, serde::Deserialize)]
+pub struct FeedQuery {
+    pub since: Option<i64>,
+    /// Only `me` is accepted; the caller can only filter on their own mentions.
+    pub mention: Option<String>,
+    pub limit: Option<i64>,
+    /// Seconds to hold the request open when there is nothing to return.
+    pub wait: Option<u64>,
+}
+
+pub async fn feed(
+    State(state): State<AppState>,
+    AuthedAgent(agent): AuthedAgent,
+    axum::extract::Query(q): axum::extract::Query<FeedQuery>,
+) -> Result<Json<api::Feed>, ApiError> {
+    let mentioning = match q.mention.as_deref() {
+        None => None,
+        Some("me") => Some(agent.id),
+        Some(other) => {
+            return Err(ApiError::BadRequest(format!(
+                "mention must be 'me', not '{other}'"
+            )));
+        }
+    };
+    let since = q.since.unwrap_or(0).max(0);
+    let limit = super::threads::clamp_limit(q.limit);
+    let wait = q.wait.unwrap_or(0).min(api::MAX_WAIT_SECS);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait);
+
+    loop {
+        // Register as a waiter *before* querying. A post committed between the
+        // query and the wait would otherwise be missed until the next one.
+        let mut notified = Box::pin(state.notify.notified());
+        notified.as_mut().enable();
+
+        let posts = {
+            let conn = state.db.lock().await;
+            db::feed(&conn, since, mentioning, limit)?
+        };
+        if !posts.is_empty() {
+            let next_since = posts.last().map_or(since, |p| p.id);
+            return Ok(Json(api::Feed { posts, next_since }));
+        }
+
+        let now = tokio::time::Instant::now();
+        if wait == 0 || now >= deadline {
+            // Timing out is a normal, successful, empty result.
+            return Ok(Json(api::Feed {
+                posts: Vec::new(),
+                next_since: since,
+            }));
+        }
+
+        tokio::select! {
+            _ = &mut notified => {}
+            _ = tokio::time::sleep_until(deadline) => {}
+        }
+    }
+}

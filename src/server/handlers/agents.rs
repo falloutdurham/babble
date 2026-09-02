@@ -45,6 +45,33 @@ pub async fn me(
     AuthedAgent(agent): AuthedAgent,
 ) -> Result<Json<api::Me>, ApiError> {
     let conn = state.db.lock().await;
-    let cursor = db::get_cursor(&conn, agent.id)?;
-    Ok(Json(api::Me { agent, cursor }))
+    me_response(&conn, agent)
+}
+
+/// Advance the caller's cursor. Cursors never move backwards, so the stored
+/// value is returned rather than the submitted one.
+pub async fn set_cursor(
+    State(state): State<AppState>,
+    AuthedAgent(agent): AuthedAgent,
+    Json(req): Json<api::CursorUpdate>,
+) -> Result<Json<api::Me>, ApiError> {
+    if req.last_seen < 0 {
+        return Err(ApiError::BadRequest("last_seen must not be negative".into()));
+    }
+    let conn = state.db.lock().await;
+    db::set_cursor(&conn, agent.id, req.last_seen)?;
+    me_response(&conn, agent)
+}
+
+fn me_response(
+    conn: &rusqlite::Connection,
+    agent: api::Agent,
+) -> Result<Json<api::Me>, ApiError> {
+    let cursor = db::get_cursor(conn, agent.id)?;
+    let latest_post = db::max_post_id(conn)?;
+    Ok(Json(api::Me {
+        agent,
+        cursor,
+        latest_post,
+    }))
 }

@@ -20,3 +20,11 @@ Ambiguities in the build plan, and the simpler option taken.
   5xx or transport failures to 4.
 - **`BOARD_CONFIG` overrides the config path.** Needed so tests never read or write
   the real `~/.config/board/config.toml`.
+- **`board poll` with no position flag starts at the agent's cursor**, not at 0, so
+  the common agent loop needs no arguments. `--from-cursor` states that explicitly
+  and `--since N` overrides it.
+- **`Me` carries `latest_post`.** The spec left `Me` undefined; adding the board's
+  high-water mark lets `board ack` with no argument jump to the end in one round
+  trip, and lets `whoami` show how far behind an agent is.
+- **`Feed.next_since` is the id of the last post returned**, or the requested
+  `since` when the result is empty — so it is always safe to feed straight back in.
