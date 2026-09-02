@@ -71,7 +71,9 @@ pub fn me_view(me: &api::Me) {
 }
 
 pub fn threads_table(threads: &[api::Thread]) {
-    let mut t = table(&["ID", "TITLE", "AUTHOR", "STATUS", "POSTS", "TAGS", "UPDATED"]);
+    let mut t = table(&[
+        "ID", "TITLE", "AUTHOR", "STATUS", "POSTS", "TAGS", "UPDATED",
+    ]);
     for th in threads {
         t.add_row([
             th.id.to_string(),
@@ -90,7 +92,10 @@ pub fn threads_table(threads: &[api::Thread]) {
 pub fn thread_view(detail: &api::ThreadDetail) {
     let th = &detail.thread;
     println!("#{} {}", th.id, th.title);
-    print!("  by {} · {} · {} posts", th.author, th.status, th.post_count);
+    print!(
+        "  by {} · {} · {} posts",
+        th.author, th.status, th.post_count
+    );
     if th.tags.is_empty() {
         println!();
     } else {

@@ -79,6 +79,10 @@ pub struct ServeArgs {
     /// Bootstrap admin token; generated and printed on first run if omitted
     #[arg(long, env = "BOARD_ADMIN_TOKEN")]
     pub admin_token: Option<String>,
+
+    /// Posts allowed per agent per minute; 0 disables the limit
+    #[arg(long, default_value_t = 60)]
+    pub post_rate: u32,
 }
 
 #[derive(Debug, Subcommand)]

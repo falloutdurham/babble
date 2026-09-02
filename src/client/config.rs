@@ -47,9 +47,8 @@ pub fn load() -> Result<ConfigFile, ClientError> {
             ));
         }
     };
-    toml::from_str(&raw).map_err(|e| {
-        ClientError::new(Kind::Config, format!("parsing {}: {e}", path.display()))
-    })
+    toml::from_str(&raw)
+        .map_err(|e| ClientError::new(Kind::Config, format!("parsing {}: {e}", path.display())))
 }
 
 pub fn save(cfg: &ConfigFile) -> Result<PathBuf, ClientError> {

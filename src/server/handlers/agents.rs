@@ -56,17 +56,16 @@ pub async fn set_cursor(
     Json(req): Json<api::CursorUpdate>,
 ) -> Result<Json<api::Me>, ApiError> {
     if req.last_seen < 0 {
-        return Err(ApiError::BadRequest("last_seen must not be negative".into()));
+        return Err(ApiError::BadRequest(
+            "last_seen must not be negative".into(),
+        ));
     }
     let conn = state.db.lock().await;
     db::set_cursor(&conn, agent.id, req.last_seen)?;
     me_response(&conn, agent)
 }
 
-fn me_response(
-    conn: &rusqlite::Connection,
-    agent: api::Agent,
-) -> Result<Json<api::Me>, ApiError> {
+fn me_response(conn: &rusqlite::Connection, agent: api::Agent) -> Result<Json<api::Me>, ApiError> {
     let cursor = db::get_cursor(conn, agent.id)?;
     let latest_post = db::max_post_id(conn)?;
     Ok(Json(api::Me {

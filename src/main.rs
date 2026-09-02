@@ -1,12 +1,6 @@
-mod api;
-mod cli;
-mod client;
-mod mentions;
-mod server;
-mod validate;
-
+use board::cli::{Cli, Command};
+use board::{client, server};
 use clap::Parser;
-use cli::{Cli, Command};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

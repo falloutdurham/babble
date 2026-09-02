@@ -291,8 +291,12 @@ pub fn list_threads(conn: &Connection, q: &ThreadQuery) -> rusqlite::Result<Vec<
     }
     args.push(Box::new(q.limit));
     args.push(Box::new(q.offset));
+    // Ordering by last post id rather than `updated_at`: post ids are
+    // monotonic, so two threads bumped inside the same millisecond still sort
+    // deterministically by which was actually written last.
     sql.push_str(&format!(
-        " ORDER BY t.updated_at DESC, t.id DESC LIMIT ?{} OFFSET ?{}",
+        " ORDER BY (SELECT MAX(p.id) FROM posts p WHERE p.thread_id = t.id) DESC, t.id DESC
+          LIMIT ?{} OFFSET ?{}",
         args.len() - 1,
         args.len()
     ));
@@ -485,6 +489,5 @@ pub fn upsert_agent_token(
             ..existing
         });
     }
-    Ok(create_agent(conn, name, token_hash, is_admin)?
-        .expect("no agent with this name exists"))
+    Ok(create_agent(conn, name, token_hash, is_admin)?.expect("no agent with this name exists"))
 }

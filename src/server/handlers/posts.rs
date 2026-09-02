@@ -17,10 +17,13 @@ pub async fn create(
 ) -> Result<Json<api::Post>, ApiError> {
     validate::body(&req.body)?;
 
+    if !state.limiter.check(agent.id) {
+        return Err(ApiError::RateLimited);
+    }
+
     let post = {
         let mut conn = state.db.lock().await;
-        let (_, status) =
-            db::thread_meta(&conn, thread_id)?.ok_or(ApiError::NotFound("thread"))?;
+        let (_, status) = db::thread_meta(&conn, thread_id)?.ok_or(ApiError::NotFound("thread"))?;
         if status == "closed" {
             return Err(ApiError::Conflict("thread is closed".into()));
         }

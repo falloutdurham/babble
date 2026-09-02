@@ -1,0 +1,628 @@
+//! Integration tests. Each one starts a real server on port 0 inside this
+//! process and drives it through the same client the CLI uses — no external
+//! processes, no fixed ports.
+
+use board::api;
+use board::cli::ServeArgs;
+use board::client::Client;
+use board::client::config::Resolved;
+use board::client::error::Kind;
+use board::server;
+use std::time::{Duration, Instant};
+
+/// The bootstrap admin token every test logs in with.
+const ADMIN: &str = "test-admin-token";
+
+struct Harness {
+    url: String,
+    /// Kept alive so the SQLite file outlives the test.
+    _dir: tempfile::TempDir,
+}
+
+impl Harness {
+    /// Start a server with post rate limiting disabled.
+    async fn start() -> Harness {
+        Harness::start_with_rate(0).await
+    }
+
+    async fn start_with_rate(post_rate: u32) -> Harness {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let args = ServeArgs {
+            db: dir
+                .path()
+                .join("board.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            bind: "127.0.0.1:0".into(),
+            admin_token: Some(ADMIN.into()),
+            post_rate,
+        };
+        let (listener, state) = server::bind(&args).await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            // Never shuts down on its own; the test process ends it.
+            let _ = server::serve(listener, state, std::future::pending()).await;
+        });
+        Harness {
+            url: format!("http://{addr}"),
+            _dir: dir,
+        }
+    }
+
+    fn client(&self, token: &str) -> Client {
+        Client::new(Resolved {
+            url: self.url.clone(),
+            token: token.to_string(),
+        })
+        .expect("client")
+    }
+
+    fn admin(&self) -> Client {
+        self.client(ADMIN)
+    }
+
+    /// Create an agent and return a client authenticated as it.
+    async fn agent(&self, name: &str) -> Client {
+        let created = self.admin().create_agent(name, false).await.expect("agent");
+        self.client(&created.token)
+    }
+}
+
+fn new_thread(title: &str, body: &str, tags: &[&str]) -> api::NewThread {
+    api::NewThread {
+        title: title.into(),
+        body: body.into(),
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+    }
+}
+
+// ------------------------------------------------------------------ health
+
+#[tokio::test]
+async fn health_needs_no_token() {
+    let h = Harness::start().await;
+    assert!(h.client("not-a-real-token").health().await.unwrap().ok);
+}
+
+#[tokio::test]
+async fn unknown_token_is_rejected() {
+    let h = Harness::start().await;
+    let err = h.client("nope").whoami().await.unwrap_err();
+    assert_eq!(err.kind, Kind::Auth);
+    assert_eq!(err.kind.exit_code(), 2);
+}
+
+// ------------------------------------------------------------------ agents
+
+#[tokio::test]
+async fn admin_creates_agents_and_lists_them() {
+    let h = Harness::start().await;
+    let created = h.admin().create_agent("alice", false).await.unwrap();
+    assert_eq!(created.name, "alice");
+    assert!(!created.token.is_empty());
+    assert!(!created.is_admin);
+
+    let names: Vec<String> = h
+        .admin()
+        .list_agents()
+        .await
+        .unwrap()
+        .agents
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(names, vec!["admin", "alice"]);
+}
+
+#[tokio::test]
+async fn non_admins_cannot_create_agents() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let err = alice.create_agent("mallory", false).await.unwrap_err();
+    assert_eq!(err.kind, Kind::Auth);
+}
+
+#[tokio::test]
+async fn duplicate_and_malformed_agent_names_are_refused() {
+    let h = Harness::start().await;
+    h.admin().create_agent("alice", false).await.unwrap();
+
+    let dup = h.admin().create_agent("alice", false).await.unwrap_err();
+    assert_eq!(dup.kind, Kind::Config);
+    assert!(dup.message.contains("already exists"));
+
+    let bad = h.admin().create_agent("Alice!", false).await.unwrap_err();
+    assert_eq!(bad.kind, Kind::Config);
+}
+
+#[tokio::test]
+async fn tokens_are_never_returned_by_listings() {
+    let h = Harness::start().await;
+    h.admin().create_agent("alice", false).await.unwrap();
+    let listed = serde_json::to_string(&h.admin().list_agents().await.unwrap()).unwrap();
+    assert!(!listed.contains("token"), "listing leaked a token field");
+}
+
+#[tokio::test]
+async fn whoami_reports_identity_cursor_and_high_water_mark() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+
+    let me = alice.whoami().await.unwrap();
+    assert_eq!(me.agent.name, "alice");
+    assert_eq!(me.cursor, 0);
+    assert_eq!(me.latest_post, 0);
+
+    alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+    assert_eq!(alice.whoami().await.unwrap().latest_post, 1);
+}
+
+// ----------------------------------------------------------------- cursors
+
+#[tokio::test]
+async fn cursors_advance_but_never_rewind() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+
+    assert_eq!(alice.set_cursor(5).await.unwrap().cursor, 5);
+    assert_eq!(alice.set_cursor(9).await.unwrap().cursor, 9);
+    assert_eq!(alice.set_cursor(2).await.unwrap().cursor, 9);
+    assert!(alice.set_cursor(-1).await.is_err());
+}
+
+// ----------------------------------------------------------------- threads
+
+#[tokio::test]
+async fn a_thread_carries_its_first_post() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+
+    let detail = alice
+        .create_thread(&new_thread("Deploy v2", "rolling out", &["ops", "ops"]))
+        .await
+        .unwrap();
+    assert_eq!(detail.thread.title, "Deploy v2");
+    assert_eq!(detail.thread.author, "alice");
+    assert_eq!(detail.thread.status, "open");
+    // Duplicate tags collapse.
+    assert_eq!(detail.thread.tags, vec!["ops"]);
+    assert_eq!(detail.thread.post_count, 1);
+    assert_eq!(detail.posts.len(), 1);
+    assert_eq!(detail.posts[0].body, "rolling out");
+}
+
+#[tokio::test]
+async fn thread_input_is_bounded() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+
+    // Tags are deduplicated before they are counted, so the over-long list has
+    // to be genuinely distinct.
+    let too_many: Vec<String> = (0..=api::MAX_TAGS).map(|i| format!("tag{i}")).collect();
+    let too_long = vec!["t".repeat(api::MAX_TAG_LEN + 1)];
+
+    for bad in [
+        new_thread("", "body", &[]),
+        new_thread(&"t".repeat(api::MAX_TITLE_LEN + 1), "body", &[]),
+        new_thread("title", "", &[]),
+        new_thread("title", &"b".repeat(api::MAX_BODY_LEN + 1), &[]),
+        api::NewThread {
+            title: "title".into(),
+            body: "body".into(),
+            tags: too_many,
+        },
+        api::NewThread {
+            title: "title".into(),
+            body: "body".into(),
+            tags: too_long,
+        },
+    ] {
+        let err = alice.create_thread(&bad).await.unwrap_err();
+        assert_eq!(err.kind, Kind::Config, "expected a 400 for {:?}", bad.title);
+    }
+}
+
+#[tokio::test]
+async fn threads_list_filters_by_tag_and_status_newest_first() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+
+    let a = alice
+        .create_thread(&new_thread("first", "b", &["ops"]))
+        .await
+        .unwrap();
+    let b = alice
+        .create_thread(&new_thread("second", "b", &["docs"]))
+        .await
+        .unwrap();
+
+    // Most recently updated first.
+    let all = alice.list_threads(None, None, None, None).await.unwrap();
+    assert_eq!(
+        all.threads.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![b.thread.id, a.thread.id]
+    );
+
+    let ops = alice
+        .list_threads(Some("ops"), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(ops.threads.len(), 1);
+    assert_eq!(ops.threads[0].title, "first");
+
+    alice.set_thread_status(a.thread.id, true).await.unwrap();
+    let open = alice
+        .list_threads(None, Some("open"), None, None)
+        .await
+        .unwrap();
+    assert_eq!(open.threads.len(), 1);
+    assert_eq!(open.threads[0].id, b.thread.id);
+
+    let closed = alice
+        .list_threads(None, Some("closed"), None, None)
+        .await
+        .unwrap();
+    assert_eq!(closed.threads.len(), 1);
+
+    // limit and offset page through the same ordering.
+    let page = alice
+        .list_threads(None, None, Some(1), Some(1))
+        .await
+        .unwrap();
+    assert_eq!(page.threads.len(), 1);
+    assert_eq!(page.threads[0].id, a.thread.id);
+
+    assert!(
+        alice
+            .list_threads(None, Some("weird"), None, None)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn showing_a_thread_supports_since_and_404s() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+
+    let t = alice
+        .create_thread(&new_thread("chat", "one", &[]))
+        .await
+        .unwrap();
+    bob.reply(t.thread.id, "two").await.unwrap();
+
+    let full = bob.show_thread(t.thread.id, None).await.unwrap();
+    assert_eq!(full.posts.len(), 2);
+    assert_eq!(full.thread.post_count, 2);
+
+    let tail = bob.show_thread(t.thread.id, Some(1)).await.unwrap();
+    assert_eq!(tail.posts.len(), 1);
+    assert_eq!(tail.posts[0].body, "two");
+
+    let err = bob.show_thread(9999, None).await.unwrap_err();
+    assert_eq!(err.kind, Kind::NotFound);
+    assert_eq!(err.kind.exit_code(), 3);
+}
+
+#[tokio::test]
+async fn replying_bumps_the_thread() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+
+    let older = alice
+        .create_thread(&new_thread("older", "b", &[]))
+        .await
+        .unwrap();
+    alice
+        .create_thread(&new_thread("newer", "b", &[]))
+        .await
+        .unwrap();
+    bob.reply(older.thread.id, "up you go").await.unwrap();
+
+    let listed = alice.list_threads(None, None, None, None).await.unwrap();
+    assert_eq!(listed.threads[0].title, "older");
+    assert!(listed.threads[0].updated_at >= older.thread.updated_at);
+}
+
+#[tokio::test]
+async fn only_the_author_or_an_admin_changes_thread_status() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+    let t = alice
+        .create_thread(&new_thread("mine", "b", &[]))
+        .await
+        .unwrap();
+
+    let err = bob.set_thread_status(t.thread.id, true).await.unwrap_err();
+    assert_eq!(err.kind, Kind::Auth);
+
+    assert_eq!(
+        alice
+            .set_thread_status(t.thread.id, true)
+            .await
+            .unwrap()
+            .status,
+        "closed"
+    );
+    // Replies to a closed thread are refused.
+    let err = bob.reply(t.thread.id, "hello?").await.unwrap_err();
+    assert_eq!(err.kind, Kind::Config);
+    assert!(err.message.contains("closed"));
+
+    // An admin can reopen someone else's thread.
+    assert_eq!(
+        h.admin()
+            .set_thread_status(t.thread.id, false)
+            .await
+            .unwrap()
+            .status,
+        "open"
+    );
+    bob.reply(t.thread.id, "hello again").await.unwrap();
+
+    assert_eq!(
+        bob.set_thread_status(9999, true).await.unwrap_err().kind,
+        Kind::NotFound
+    );
+}
+
+#[tokio::test]
+async fn posting_to_a_missing_thread_is_a_404() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    assert_eq!(
+        alice.reply(4242, "into the void").await.unwrap_err().kind,
+        Kind::NotFound
+    );
+}
+
+#[tokio::test]
+async fn post_bodies_are_bounded() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+
+    assert!(alice.reply(t.thread.id, "   ").await.is_err());
+    assert!(
+        alice
+            .reply(t.thread.id, &"x".repeat(api::MAX_BODY_LEN + 1))
+            .await
+            .is_err()
+    );
+}
+
+// ---------------------------------------------------------------- mentions
+
+#[tokio::test]
+async fn mentions_resolve_known_agents_and_ignore_the_rest() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    h.agent("bob").await;
+
+    let t = alice
+        .create_thread(&new_thread("hi", "ping @bob and @ghost", &[]))
+        .await
+        .unwrap();
+    assert_eq!(t.posts[0].mentions, vec!["bob"]);
+}
+
+// -------------------------------------------------------------------- feed
+
+#[tokio::test]
+async fn the_feed_pages_forward_from_since() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("t", "one", &[]))
+        .await
+        .unwrap();
+    alice.reply(t.thread.id, "two").await.unwrap();
+    alice.reply(t.thread.id, "three").await.unwrap();
+
+    let first = alice.feed(0, false, Some(2), None).await.unwrap();
+    assert_eq!(first.posts.len(), 2);
+    assert_eq!(first.next_since, 2);
+    assert_eq!(first.posts[0].thread_title, "t");
+
+    let rest = alice
+        .feed(first.next_since, false, Some(2), None)
+        .await
+        .unwrap();
+    assert_eq!(rest.posts.len(), 1);
+    assert_eq!(rest.posts[0].body, "three");
+
+    // Nothing left: next_since holds its position.
+    let empty = alice
+        .feed(rest.next_since, false, None, None)
+        .await
+        .unwrap();
+    assert!(empty.posts.is_empty());
+    assert_eq!(empty.next_since, rest.next_since);
+}
+
+#[tokio::test]
+async fn mention_me_filters_the_feed() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+
+    let t = alice
+        .create_thread(&new_thread("t", "hello everyone", &[]))
+        .await
+        .unwrap();
+    alice.reply(t.thread.id, "over to you @bob").await.unwrap();
+
+    let mine = bob.feed(0, true, None, None).await.unwrap();
+    assert_eq!(mine.posts.len(), 1);
+    assert_eq!(mine.posts[0].body, "over to you @bob");
+
+    assert!(
+        alice
+            .feed(0, true, None, None)
+            .await
+            .unwrap()
+            .posts
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_long_poll_returns_as_soon_as_a_post_lands() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+    let t = alice
+        .create_thread(&new_thread("t", "first", &[]))
+        .await
+        .unwrap();
+    let thread_id = t.thread.id;
+
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        alice.reply(thread_id, "woken up").await.expect("reply");
+    });
+
+    let started = Instant::now();
+    let feed = bob.feed(1, false, None, Some(10)).await.unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(feed.posts.len(), 1);
+    assert_eq!(feed.posts[0].body, "woken up");
+    assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}");
+}
+
+#[tokio::test]
+async fn a_long_poll_times_out_empty_and_successful() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+
+    let started = Instant::now();
+    let feed = alice.feed(0, false, None, Some(1)).await.unwrap();
+    assert!(feed.posts.is_empty());
+    assert_eq!(feed.next_since, 0);
+    assert!(started.elapsed() >= Duration::from_millis(900));
+}
+
+#[tokio::test]
+async fn a_waiting_poll_still_returns_existing_posts_immediately() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("t", "already here", &[]))
+        .await
+        .unwrap();
+
+    let started = Instant::now();
+    let feed = alice.feed(0, false, None, Some(30)).await.unwrap();
+    assert_eq!(feed.posts.len(), 1);
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn the_mention_filter_only_accepts_me() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    // The client only ever sends `me`, so this exercises the raw query.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/posts?mention=bob", h.url))
+        .bearer_auth(ADMIN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    assert!(alice.feed(0, true, None, None).await.is_ok());
+}
+
+// ------------------------------------------------------------- rate limits
+
+#[tokio::test]
+async fn posting_faster_than_the_budget_is_refused() {
+    let h = Harness::start_with_rate(2).await;
+    let alice = h.agent("alice").await;
+
+    // The thread itself spends one token, leaving exactly one reply.
+    let t = alice
+        .create_thread(&new_thread("t", "one", &[]))
+        .await
+        .unwrap();
+    alice.reply(t.thread.id, "two").await.unwrap();
+
+    let err = alice.reply(t.thread.id, "three").await.unwrap_err();
+    assert_eq!(err.kind, Kind::Config);
+    assert!(err.message.contains("rate limit"), "got: {}", err.message);
+
+    // Budgets are per agent, so bob is unaffected.
+    let bob = h.agent("bob").await;
+    bob.reply(t.thread.id, "mine").await.unwrap();
+}
+
+// ------------------------------------------------------------- concurrency
+
+#[tokio::test]
+async fn ten_agents_posting_at_once_lose_nothing() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("stampede", "go", &[]))
+        .await
+        .unwrap();
+    let thread_id = t.thread.id;
+
+    const AGENTS: usize = 10;
+    const EACH: usize = 10;
+
+    let mut clients = Vec::new();
+    for i in 0..AGENTS {
+        clients.push(h.agent(&format!("agent-{i}")).await);
+    }
+
+    let mut tasks = Vec::new();
+    for (i, client) in clients.into_iter().enumerate() {
+        tasks.push(tokio::spawn(async move {
+            for j in 0..EACH {
+                client
+                    .reply(thread_id, &format!("agent {i} post {j}"))
+                    .await
+                    .expect("reply");
+            }
+        }));
+    }
+    for task in tasks {
+        task.await.expect("task");
+    }
+
+    let detail = alice.show_thread(thread_id, None).await.unwrap();
+    // The opening post plus every concurrent reply.
+    assert_eq!(detail.posts.len(), AGENTS * EACH + 1);
+    assert_eq!(detail.thread.post_count as usize, AGENTS * EACH + 1);
+
+    // Ids are strictly increasing and never reused.
+    let ids: Vec<i64> = detail.posts.iter().map(|p| p.id).collect();
+    assert!(
+        ids.windows(2).all(|w| w[1] > w[0]),
+        "post ids are not strictly increasing"
+    );
+
+    // Every message survived exactly once.
+    let mut bodies: Vec<&str> = detail.posts.iter().map(|p| p.body.as_str()).collect();
+    bodies.sort_unstable();
+    bodies.dedup();
+    assert_eq!(bodies.len(), AGENTS * EACH + 1);
+
+    // And the feed sees the same set.
+    let feed = alice
+        .feed(0, false, Some(api::MAX_LIMIT), None)
+        .await
+        .unwrap();
+    assert_eq!(feed.posts.len(), AGENTS * EACH + 1);
+    assert_eq!(feed.next_since, *ids.last().unwrap());
+}

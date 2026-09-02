@@ -24,7 +24,9 @@ pub fn hash_token(token: &str) -> String {
 fn bearer(parts: &Parts) -> Option<String> {
     let raw = parts.headers.get(axum::http::header::AUTHORIZATION)?;
     let raw = raw.to_str().ok()?;
-    let token = raw.strip_prefix("Bearer ").or_else(|| raw.strip_prefix("bearer "))?;
+    let token = raw
+        .strip_prefix("Bearer ")
+        .or_else(|| raw.strip_prefix("bearer "))?;
     let token = token.trim();
     (!token.is_empty()).then(|| token.to_string())
 }
@@ -75,7 +77,10 @@ mod tests {
         let a = generate_token();
         let b = generate_token();
         assert_ne!(a, b);
-        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
     }
 
     #[test]

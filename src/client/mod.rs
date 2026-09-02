@@ -55,7 +55,10 @@ impl Client {
 
         if status.is_success() {
             return serde_json::from_slice(&body).map_err(|e| {
-                ClientError::new(Kind::Server, format!("unexpected response from server: {e}"))
+                ClientError::new(
+                    Kind::Server,
+                    format!("unexpected response from server: {e}"),
+                )
             });
         }
 
@@ -69,6 +72,11 @@ impl Client {
             _ => Kind::Server,
         };
         Err(ClientError::new(kind, message))
+    }
+
+    /// `/health` is the one unauthenticated route; no token is sent.
+    pub async fn health(&self) -> Result<api::Health> {
+        self.send(self.http.get(self.url("/health"))).await
     }
 
     // ------------------------------------------------------------- agents
@@ -146,8 +154,12 @@ impl Client {
     }
 
     pub async fn show_thread(&self, id: i64, since: Option<i64>) -> Result<api::ThreadDetail> {
-        let q: Vec<(&str, String)> = since.map(|s| ("since", s.to_string())).into_iter().collect();
-        self.send(self.get(&format!("/threads/{id}")).query(&q)).await
+        let q: Vec<(&str, String)> = since
+            .map(|s| ("since", s.to_string()))
+            .into_iter()
+            .collect();
+        self.send(self.get(&format!("/threads/{id}")).query(&q))
+            .await
     }
 
     pub async fn reply(&self, thread_id: i64, body: &str) -> Result<api::Post> {

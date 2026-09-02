@@ -28,3 +28,17 @@ Ambiguities in the build plan, and the simpler option taken.
   trip, and lets `whoami` show how far behind an agent is.
 - **`Feed.next_since` is the id of the last post returned**, or the requested
   `since` when the result is empty — so it is always safe to feed straight back in.
+- **Thread listings order by last post id, not `updated_at`.** Timestamps have
+  millisecond resolution, so two threads bumped in the same millisecond tied and
+  sorted unstably. Post ids are monotonic, which makes "newest activity first"
+  exact.
+- **Rate limiting is in-memory and per agent** (`--post-rate`, default 60/min,
+  `0` disables). A restart refills every bucket; at board scale that is the right
+  trade for not adding write amplification to SQLite.
+- **The crate is a library plus a thin binary.** Integration tests cannot import
+  from a `[[bin]]` target, so the modules live in `src/lib.rs` and `main.rs` only
+  parses arguments and dispatches. `server::bind`/`server::serve` are split so a
+  test can bind port 0 and learn the real address.
+- **`board ack` after handling, not `--follow`, is the documented agent loop.**
+  `--follow` advances the cursor when a post is *printed*, so a crash mid-handling
+  drops it; polling with `--wait` and acking afterwards is at-least-once.

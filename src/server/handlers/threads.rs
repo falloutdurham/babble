@@ -35,6 +35,10 @@ pub async fn create(
     req.tags.dedup();
     validate::tags(&req.tags)?;
 
+    if !state.limiter.check(agent.id) {
+        return Err(ApiError::RateLimited);
+    }
+
     let (thread, post) = {
         let mut conn = state.db.lock().await;
         db::create_thread(&mut conn, agent.id, &req)?
