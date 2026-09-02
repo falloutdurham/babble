@@ -321,3 +321,237 @@ async fn a_dead_board_degrades_instead_of_five_hundreding() {
     assert!(html.contains("retrying"));
     assert!(html.contains("since=7"), "tail lost its position on error");
 }
+
+/// `application/x-www-form-urlencoded` by hand, so the shipped client does not
+/// have to carry reqwest's `form` feature just for these tests.
+fn urlencoded(pairs: &[(&str, &str)]) -> String {
+    fn enc(s: &str) -> String {
+        let mut out = String::new();
+        for b in s.as_bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(*b as char)
+                }
+                b' ' => out.push('+'),
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", enc(k), enc(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// POST a form to the console, optionally as htmx would.
+async fn post_form(url: &str, htmx: bool, pairs: &[(&str, &str)]) -> (reqwest::StatusCode, String) {
+    let mut req = reqwest::Client::new()
+        .post(url)
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .body(urlencoded(pairs));
+    if htmx {
+        req = req.header("HX-Request", "true");
+    }
+    let r = req.send().await.expect("post");
+    (r.status(), r.text().await.expect("body"))
+}
+
+// ------------------------------------------------------------- posting
+
+/// A console that will accept writes, plus a peer agent to watch the board.
+async fn writable() -> Harness {
+    Harness::start().await
+}
+
+#[tokio::test]
+async fn the_operator_can_reply_from_the_console() {
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("ops", "anyone there?", &[]))
+        .await
+        .unwrap();
+
+    let (status, html) = post_form(
+        &format!("{}/t/1/reply", h.console),
+        true,
+        &[("body", "on it — @alice taking this")],
+    )
+    .await;
+    assert!(status.is_success());
+
+    // The board really has it, authored by the console's own agent.
+    let detail = alice.show_thread(1, None).await.unwrap();
+    assert_eq!(detail.posts.len(), 2);
+    assert_eq!(detail.posts[1].author, "admin");
+    assert_eq!(detail.posts[1].body, "on it — @alice taking this");
+    assert_eq!(detail.posts[1].mentions, vec!["alice"]);
+
+    // The response is an empty box, not the post: the live tail delivers that,
+    // so the operator never sees their reply twice.
+    assert!(html.contains(r#"class="compose""#));
+    assert!(
+        !html.contains("taking this"),
+        "reply was echoed as well as tailed"
+    );
+}
+
+#[tokio::test]
+async fn a_reply_reaches_a_waiting_agent_immediately() {
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("ops", "waiting", &[]))
+        .await
+        .unwrap();
+
+    let waiter = tokio::spawn(async move {
+        alice
+            .feed(&babble::client::FeedRequest::since(1).wait(Some(10)))
+            .await
+            .expect("feed")
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    post_form(
+        &format!("{}/t/1/reply", h.console),
+        true,
+        &[("body", "from the console")],
+    )
+    .await;
+
+    let started = Instant::now();
+    let feed = waiter.await.expect("task");
+    assert_eq!(feed.posts.len(), 1);
+    assert_eq!(feed.posts[0].body, "from the console");
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn an_empty_reply_is_refused_without_touching_the_board() {
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+
+    let (_, html) = post_form(
+        &format!("{}/t/1/reply", h.console),
+        true,
+        &[("body", "   \n  ")],
+    )
+    .await;
+    assert!(html.contains("Write something first"));
+    assert_eq!(alice.show_thread(1, None).await.unwrap().posts.len(), 1);
+}
+
+#[tokio::test]
+async fn replying_to_a_closed_thread_says_so() {
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+    alice.set_thread_status(t.thread.id, true).await.unwrap();
+
+    // The page offers no box...
+    let (_, page) = h.get("/t/1").await;
+    assert!(page.contains("This thread is closed"));
+    assert!(!page.contains(r#"class="compose""#));
+
+    // ...and a hand-rolled POST is refused with the board's own reason.
+    let (_, html) = post_form(
+        &format!("{}/t/1/reply", h.console),
+        true,
+        &[("body", "let me in")],
+    )
+    .await;
+    assert!(html.contains("closed"), "{html}");
+    assert_eq!(alice.show_thread(1, None).await.unwrap().posts.len(), 1);
+}
+
+#[tokio::test]
+async fn a_cross_origin_form_post_cannot_write_to_the_board() {
+    // A hostile page on the network can make a browser send a simple form POST,
+    // but it cannot set HX-Request without a preflight the console never grants.
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+
+    let (status, _) = post_form(
+        &format!("{}/t/1/reply", h.console),
+        false,
+        &[("body", "posted by a drive-by")],
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+    assert_eq!(alice.show_thread(1, None).await.unwrap().posts.len(), 1);
+}
+
+#[tokio::test]
+async fn read_only_mode_removes_the_box_and_refuses_writes() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let args = ServeArgs {
+        db: dir.path().join("b.sqlite").to_string_lossy().into_owned(),
+        bind: "127.0.0.1:0".into(),
+        admin_token: Some(ADMIN.into()),
+        post_rate: 0,
+    };
+    let (listener, state) = server::bind(&args).await.expect("bind");
+    let board = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = server::serve(listener, state, std::future::pending()).await;
+    });
+
+    let api = Client::new(Resolved {
+        url: board.clone(),
+        token: ADMIN.into(),
+    })
+    .unwrap();
+    api.create_thread(&new_thread("t", "b", &[])).await.unwrap();
+
+    let console_state = web::Console::new(
+        Client::new(Resolved {
+            url: board.clone(),
+            token: ADMIN.into(),
+        })
+        .unwrap(),
+        board.clone(),
+        "admin".into(),
+    )
+    .wait_secs(2)
+    .read_only(true);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let console = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, web::router(console_state)).await;
+    });
+
+    let page = reqwest::get(format!("{console}/t/1"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("read-only"));
+    assert!(!page.contains(r#"class="compose""#));
+
+    let (status, _) = post_form(
+        &format!("{console}/t/1/reply"),
+        true,
+        &[("body", "should not land")],
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(api.show_thread(1, None).await.unwrap().posts.len(), 1);
+}

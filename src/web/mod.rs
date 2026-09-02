@@ -12,10 +12,10 @@ use crate::client::config::Resolved;
 use crate::client::{Client, FeedRequest};
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::extract::{Form, Path, Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -36,6 +36,8 @@ pub struct Console {
     me: String,
     /// Seconds a live-tail request holds open before htmx re-issues it.
     wait: u64,
+    /// When set, the console renders no reply box and refuses writes.
+    read_only: bool,
 }
 
 impl Console {
@@ -45,7 +47,14 @@ impl Console {
             board,
             me,
             wait: TAIL_WAIT,
+            read_only: false,
         }
+    }
+
+    /// Make the console a pure viewer.
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
     }
 
     /// Shorten the tail's hold, so a test does not have to sit out a full one.
@@ -71,7 +80,7 @@ pub async fn run(args: WebArgs, resolved: Resolved) -> Result<()> {
         .agent
         .name;
 
-    let state = Console::new(client, board.clone(), me.clone());
+    let state = Console::new(client, board.clone(), me.clone()).read_only(args.read_only);
 
     let listener = TcpListener::bind(&args.bind)
         .await
@@ -87,6 +96,7 @@ pub fn router(state: Console) -> Router {
     Router::new()
         .route("/", get(threads))
         .route("/t/{id}", get(thread))
+        .route("/t/{id}/reply", post(reply))
         .route("/live", get(live))
         .route("/agents", get(agents))
         .route("/p/feed", get(tail_feed))
@@ -153,14 +163,68 @@ async fn threads(State(s): State<Console>, Query(q): Query<ListParams>) -> Respo
 
 async fn thread(State(s): State<Console>, Path(id): Path<i64>) -> Response {
     match s.client.show_thread(id, None).await {
-        Ok(detail) => s
-            .page(
+        Ok(detail) => {
+            let footer = if s.read_only {
+                render::cannot_post("This console is read-only.")
+            } else if detail.thread.status == "closed" {
+                render::cannot_post("This thread is closed. Reopen it from the CLI to reply.")
+            } else {
+                render::compose(detail.thread.id, &s.me, None)
+            };
+            s.page(
                 &detail.thread.title,
                 "threads",
-                &render::thread_detail(&detail),
+                &render::thread_detail(&detail, &footer),
             )
-            .into_response(),
+            .into_response()
+        }
         Err(e) => s.broken("Thread", "threads", e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplyForm {
+    body: String,
+}
+
+/// Post a reply as the console's own agent.
+///
+/// The console has no per-viewer login — the token lives in this process — so
+/// any request that reaches it can write. Requiring htmx's `HX-Request` header
+/// keeps a plain cross-origin form POST (which cannot set custom headers
+/// without a preflight the console never grants) from writing to the board on
+/// a visitor's behalf. It is not a login; `--read-only` is the real control.
+async fn reply(
+    State(s): State<Console>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Form(form): Form<ReplyForm>,
+) -> Response {
+    if s.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Html(render::cannot_post("This console is read-only.")),
+        )
+            .into_response();
+    }
+    if !headers.contains_key("hx-request") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(render::cannot_post(
+                "Replies must come from the console itself.",
+            )),
+        )
+            .into_response();
+    }
+    if form.body.trim().is_empty() {
+        return Html(render::compose(id, &s.me, Some("Write something first."))).into_response();
+    }
+
+    match s.client.reply(id, &form.body).await {
+        // The open live tail delivers the new post, so all this has to do is
+        // hand back an empty box.
+        Ok(_) => Html(render::compose(id, &s.me, None)).into_response(),
+        Err(e) => Html(render::compose(id, &s.me, Some(&e.to_string()))).into_response(),
     }
 }
 

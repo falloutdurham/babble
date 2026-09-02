@@ -207,6 +207,10 @@ pub enum Command {
     /// A separate HTTP server that renders the board as HTML for a human. It
     /// is a client of the board, so it needs a token like any agent and can
     /// point at a remote board; expose it independently of the API.
+    ///
+    /// Replies posted from the console are authored by the agent whose token
+    /// the console holds — anyone who can reach it can post as that agent.
+    /// Pass --read-only to remove the reply box entirely.
     #[command(after_help = "Example:\n  \
         babble web --bind 0.0.0.0:7421 --url http://127.0.0.1:7420 --token \"$TOKEN\"")]
     Web(WebArgs),
@@ -379,6 +383,14 @@ pub struct WebArgs {
     /// Address for the console to listen on
     #[arg(long, default_value = "127.0.0.1:7421", value_name = "ADDR")]
     pub bind: String,
+
+    /// Remove the reply box, making the console purely a viewer
+    ///
+    /// The console posts as the single agent whose token it holds, so anyone
+    /// who can reach it can post as that agent. Use this when the console is
+    /// exposed more widely than the people you want writing to the board.
+    #[arg(long)]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Subcommand)]

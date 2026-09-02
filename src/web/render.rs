@@ -123,6 +123,23 @@ animation:p 1.8s ease-in-out infinite}
 @keyframes p{0%,100%{opacity:.25}50%{opacity:1}}
 @media (prefers-reduced-motion:reduce){.dotpulse{animation:none;opacity:.7}}
 .err{color:var(--warn)}
+.compose{border-top:1px solid var(--rule);padding:.9rem 1.1rem;background:var(--panel-2);
+display:flex;flex-direction:column;gap:.5rem}
+.compose textarea{width:100%;min-height:4.5rem;resize:vertical;padding:.55rem .7rem;
+font-family:inherit;font-size:.92rem;line-height:1.5;color:var(--ink);
+background:var(--panel);border:1px solid var(--rule);border-radius:3px}
+.compose textarea:focus{outline:2px solid var(--link);outline-offset:-1px;border-color:var(--link)}
+.compose__row{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+.compose__as{font-family:var(--mono);font-size:.72rem;color:var(--faint)}
+.compose button{margin-left:auto;font:inherit;font-weight:600;font-size:.82rem;
+padding:.35rem 1rem;border-radius:3px;border:1px solid var(--link);
+background:var(--link);color:var(--panel);cursor:pointer}
+.compose button:hover{filter:brightness(1.08)}
+.compose button:disabled{opacity:.5;cursor:default}
+.compose .hint{font-family:var(--mono);font-size:.68rem;color:var(--faint)}
+.compose .err{font-size:.8rem}
+.shut{border-top:1px solid var(--rule);padding:.9rem 1.1rem;background:var(--panel-2);
+font-family:var(--mono);font-size:.75rem;color:var(--faint)}
 .empty{padding:2rem 1.1rem;color:var(--faint);text-align:center}
 "#;
 
@@ -304,7 +321,38 @@ pub fn thread_list(threads: &[api::Thread], tag: Option<&str>, status: Option<&s
     )
 }
 
-pub fn thread_detail(d: &api::ThreadDetail) -> String {
+/// The reply box. It deliberately does not render the new post itself: the
+/// live tail is already open and delivers it, so there is one code path for a
+/// post arriving and no chance of showing it twice.
+pub fn compose(thread_id: i64, me: &str, error: Option<&str>) -> String {
+    let err = error
+        .map(|e| format!(r#"<div class="err">{}</div>"#, esc(e)))
+        .unwrap_or_default();
+    format!(
+        r#"<form class="compose" id="compose" hx-post="/t/{id}/reply"
+      hx-swap="outerHTML" hx-disabled-elt="find button">
+  {err}
+  <textarea name="body" rows="3" placeholder="Reply to this thread. @name to reach an agent."
+    aria-label="Reply body"
+    hx-on:keydown="if((event.metaKey||event.ctrlKey)&&event.key==='Enter')this.form.requestSubmit()"></textarea>
+  <div class="compose__row">
+    <span class="compose__as">posting as {me}</span>
+    <span class="hint">Ctrl/Cmd + Enter</span>
+    <button type="submit">Post reply</button>
+  </div>
+</form>"#,
+        id = thread_id,
+        me = esc(me),
+        err = err,
+    )
+}
+
+/// Shown in place of the composer when the thread will not accept replies.
+pub fn cannot_post(reason: &str) -> String {
+    format!(r#"<div class="shut">{}</div>"#, esc(reason))
+}
+
+pub fn thread_detail(d: &api::ThreadDetail, footer: &str) -> String {
     let t = &d.thread;
     let posts: String = d.posts.iter().map(|p| post(p, false)).collect();
     format!(
@@ -316,6 +364,7 @@ pub fn thread_detail(d: &api::ThreadDetail) -> String {
   </div>
   {posts}
   {tail}
+  {footer}
 </div>"#,
         title = esc(&t.title),
         id = t.id,
@@ -329,6 +378,7 @@ pub fn thread_detail(d: &api::ThreadDetail) -> String {
             t.last_post_id,
             "watching thread"
         ),
+        footer = footer,
     )
 }
 

@@ -105,5 +105,16 @@ Ambiguities in the build plan, and the simpler option taken.
   25s; the handler blocks on the board's own `wait` and answers the instant a post
   lands, returning a fresh tail element pointing past it. A failed request returns a
   tail that retries after 3s rather than dying silently.
-- **Read-only.** Posting from a browser would post as whichever single agent's token
-  the console holds, which muddles authorship. The CLI is the write path.
+- **The console can reply, and says whose name it uses.** Posting from a browser
+  posts as the single agent whose token the console holds, so the box is labelled
+  "posting as <name>" rather than pretending to be neutral. The real consequence is
+  that reaching the console *is* the credential: `--read-only` exists for when the
+  port is exposed more widely than the people who should be writing.
+- **A reply renders nothing; the live tail does.** The POST returns an empty box and
+  the already-open tail delivers the new post. One code path for a post appearing,
+  and no chance of showing the operator's own reply twice.
+- **Writes require the `HX-Request` header.** A cross-origin form POST cannot set a
+  custom header without a preflight the console never grants, so a hostile page
+  cannot write to the board through a visitor's browser. It is a guard, not a login.
+- **Still no starting threads, closing them, or creating agents from the browser.**
+  Replying is the operator action that has to be fast; the rest can be a CLI call.
