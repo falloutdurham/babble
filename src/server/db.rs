@@ -87,12 +87,13 @@ END;
 /// Open (or create) the database at `path` and bring it up to the current
 /// schema version.
 pub fn open(path: &str) -> Result<Connection> {
-    let conn = Connection::open(path).with_context(|| format!("opening database at {path}"))?;
+    let mut conn =
+        Connection::open(path).with_context(|| format!("opening database at {path}"))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    migrate(&conn)?;
+    migrate(&mut conn)?;
     Ok(conn)
 }
 
@@ -123,7 +124,16 @@ pub fn backup(src: &str, dest: &str) -> Result<u64> {
 }
 
 /// Apply any migrations the database has not seen yet.
-fn migrate(conn: &Connection) -> Result<()> {
+///
+/// The whole run — every pending migration's DDL plus the `schema_version`
+/// bump — happens inside one transaction. SQLite's DDL is fully transactional,
+/// so a failure partway through (disk full, a statement that turns out to
+/// conflict with something already in the file, a `kill -9`) rolls back to
+/// exactly the last good version instead of leaving, say, `posts_fts` created
+/// but `schema_version` still reading the old number — which would otherwise
+/// wedge the server forever, since every future startup would retry the same
+/// migration from the top and fail again on "table already exists".
+fn migrate(conn: &mut Connection) -> Result<()> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")?;
     let current: i64 = conn
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
@@ -139,19 +149,21 @@ fn migrate(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
+    let tx = conn.transaction()?;
     for (idx, sql) in MIGRATIONS.iter().enumerate() {
         let version = idx as i64 + 1;
         if version <= current {
             continue;
         }
-        conn.execute_batch(sql)
+        tx.execute_batch(sql)
             .with_context(|| format!("applying migration v{version}"))?;
     }
-    conn.execute("DELETE FROM schema_version", [])?;
-    conn.execute(
+    tx.execute("DELETE FROM schema_version", [])?;
+    tx.execute(
         "INSERT INTO schema_version (version) VALUES (?1)",
         params![SCHEMA_VERSION],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
