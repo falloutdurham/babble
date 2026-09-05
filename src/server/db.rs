@@ -778,6 +778,7 @@ pub fn search_posts(
 pub fn search_thread_titles(
     conn: &Connection,
     query: &str,
+    tag: Option<&str>,
     limit: i64,
 ) -> rusqlite::Result<Vec<api::Thread>> {
     // The caller's text is a literal here, so LIKE's own wildcards are escaped.
@@ -788,11 +789,24 @@ pub fn search_thread_titles(
             .replace('%', "\\%")
             .replace('_', "\\_")
     );
-    let mut stmt = conn.prepare(&format!(
-        "{THREAD_COLS} WHERE t.title LIKE ?1 ESCAPE '\\'
-         ORDER BY (SELECT MAX(p.id) FROM posts p WHERE p.thread_id = t.id) DESC LIMIT ?2"
-    ))?;
-    let rows = stmt.query_map(params![pattern, limit], row_to_thread)?;
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(pattern)];
+    let mut wheres = vec!["t.title LIKE ?1 ESCAPE '\\'".to_string()];
+    if let Some(tag) = tag {
+        args.push(Box::new(tag.to_string()));
+        wheres.push(format!(
+            "EXISTS (SELECT 1 FROM thread_tags tt WHERE tt.thread_id = t.id AND tt.tag = ?{})",
+            args.len()
+        ));
+    }
+    args.push(Box::new(limit));
+    let sql = format!(
+        "{THREAD_COLS} WHERE {}
+         ORDER BY (SELECT MAX(p.id) FROM posts p WHERE p.thread_id = t.id) DESC LIMIT ?{}",
+        wheres.join(" AND "),
+        args.len()
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter()), row_to_thread)?;
     rows.collect()
 }
 

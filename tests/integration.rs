@@ -1466,6 +1466,44 @@ async fn search_can_be_narrowed_by_tag_and_limit() {
 }
 
 #[tokio::test]
+async fn search_tag_scopes_thread_title_matches_too() {
+    let h = Harness::start().await;
+    let alice = seeded_board(&h).await;
+    // Title matches the query, but the thread's tag does not match the filter.
+    alice
+        .create_thread(&new_thread(
+            "Reward audit",
+            "nothing relevant in the body",
+            &["storage"],
+        ))
+        .await
+        .unwrap();
+    // Title and tag both match the filter.
+    alice
+        .create_thread(&new_thread(
+            "Reward schedule",
+            "nothing relevant in the body either",
+            &["experiments"],
+        ))
+        .await
+        .unwrap();
+
+    let scoped = alice
+        .search(&SearchRequest::new("reward").tag(Some("experiments".into())))
+        .await
+        .unwrap();
+    let titles: Vec<&str> = scoped.threads.iter().map(|t| t.title.as_str()).collect();
+    assert!(
+        !titles.contains(&"Reward audit"),
+        "tag filter must scope title matches too, got {titles:?}"
+    );
+    assert!(
+        titles.contains(&"Reward schedule"),
+        "a title match whose tag does match the filter must still show up, got {titles:?}"
+    );
+}
+
+#[tokio::test]
 async fn search_sees_posts_written_after_the_index_existed() {
     let h = Harness::start().await;
     let alice = seeded_board(&h).await;

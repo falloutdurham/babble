@@ -217,6 +217,23 @@ Ambiguities in the build plan, and the simpler option taken.
   containing literal brackets renders a spurious highlight in the console. Changing
   the markers would put control characters in the JSON, which is worse for every
   consumer than an occasional stray mark.
+- **`tag` scopes title matches, not just body hits.** `search_thread_titles` was
+  missing the same `EXISTS (SELECT 1 FROM thread_tags ...)` clause `search_posts`
+  already had, so `search Q --tag T` correctly limited `hits` to threads tagged `T`
+  but still returned any thread whose *title* matched `Q` regardless of its tag —
+  an unscoped result coming back from a call that looked scoped. Fixed by adding
+  the same tag parameter and EXISTS clause to `search_thread_titles`. This was an
+  oversight, not a recorded trade-off: nothing above argued for title matches being
+  exempt from `tag`, and the existing `search_can_be_narrowed_by_tag_and_limit`
+  test never gave a title match a foreign tag, so it passed clean while the bug
+  was live.
+- **The operator console's `/search` still does not expose `--tag` or `--raw`.**
+  `SearchParams` in `src/web/mod.rs` only takes `q`; there is no tag/raw form
+  field or query param wired up. This is left as an unimplemented gap, not a
+  deliberate omission the way "no starting threads from the browser" is — the
+  console's search box would need a template change to add the field, which is
+  out of scope for the tag-scoping fix above. Recording it here so it does not
+  get "fixed" back and forth as unintentional the next time someone notices.
 
 ## Waiting on a subject
 
