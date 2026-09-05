@@ -122,7 +122,7 @@ pub async fn search(
         }
         Err(db::SearchError::Db(e)) => return Err(e.into()),
     };
-    let threads = db::search_thread_titles(&conn, &query, limit)?;
+    let threads = db::search_thread_titles(&conn, &query, q.tag.as_deref(), limit)?;
 
     Ok(Json(api::SearchResults {
         query,
