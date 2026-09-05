@@ -1573,6 +1573,117 @@ async fn a_v2_database_gains_a_populated_search_index() {
     assert_eq!(r.hits[0].post.body, "written before search existed");
 }
 
+#[tokio::test]
+async fn a_migration_that_fails_partway_leaves_no_partial_schema() {
+    // The failure this guards against: a migration batch is multiple DDL
+    // statements, and without a wrapping transaction a crash or error between
+    // them leaves e.g. `posts_fts` created but `schema_version` still at the
+    // old number. Every future startup would then retry the same migration
+    // from the top and die again on "table already exists" — the server can
+    // never come back up without manual SQL surgery.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db = dir.path().join("b.sqlite").to_string_lossy().into_owned();
+    let args = ServeArgs {
+        db: db.clone(),
+        bind: "127.0.0.1:0".into(),
+        admin_token: Some(ADMIN.into()),
+        post_rate: 0,
+    };
+
+    // Build a board (migrates all the way to SCHEMA_VERSION_NOW), then rewind
+    // it to v2, exactly like the backfill test above.
+    {
+        let (listener, state) = server::bind(&args).await.expect("bind");
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = server::serve(listener, state, std::future::pending()).await;
+        });
+        let c = Client::new(Resolved {
+            url: format!("http://{addr}"),
+            token: ADMIN.into(),
+        })
+        .unwrap();
+        c.create_thread(&new_thread("old", "written before v3", &[]))
+            .await
+            .unwrap();
+        handle.abort();
+    }
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "DROP TRIGGER posts_fts_insert; DROP TABLE posts_fts;
+             DELETE FROM schema_version; INSERT INTO schema_version (version) VALUES (2);",
+        )
+        .expect("rewind to v2");
+        // Plant a trigger under the exact name the v3 migration wants to
+        // create. The migration's `CREATE VIRTUAL TABLE posts_fts` and its
+        // backfill `INSERT` both succeed first — only the final
+        // `CREATE TRIGGER posts_fts_insert` collides, so this reproduces a
+        // migration failing *after* partial progress, not on its first
+        // statement.
+        conn.execute_batch(
+            "CREATE TRIGGER posts_fts_insert AFTER INSERT ON posts BEGIN SELECT 1; END;",
+        )
+        .expect("plant a colliding trigger");
+    }
+
+    // Re-opening must fail (the planted trigger blocks v3)...
+    let err = match server::bind(&args).await {
+        Ok(_) => panic!("migration should fail"),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err:#}").contains("applying migration v3"),
+        "expected a v3 migration failure, got: {err:#}"
+    );
+
+    // ...and must leave no partial schema behind: version unchanged, and the
+    // table the failed migration created rolled back with everything else.
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2, "schema_version must not advance on a failed migration");
+        let posts_fts_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'posts_fts')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !posts_fts_exists,
+            "posts_fts must be rolled back, not left half-created"
+        );
+    }
+
+    // Fix the actual cause (drop the collision) and confirm a retry starts
+    // cleanly from v2 instead of re-hitting "already exists".
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("DROP TRIGGER posts_fts_insert;")
+            .expect("remove the collision");
+    }
+    let (listener, state) = server::bind(&args).await.expect("retry should succeed");
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = server::serve(listener, state, std::future::pending()).await;
+    });
+    let c = Client::new(Resolved {
+        url: format!("http://{addr}"),
+        token: ADMIN.into(),
+    })
+    .unwrap();
+    let r = c.search(&SearchRequest::new("before v3")).await.unwrap();
+    assert_eq!(r.hits.len(), 1, "the retried migration must still backfill");
+    let version: i64 = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION_NOW);
+}
+
 // -------------------------------------------------------------- tag feeds
 
 #[tokio::test]

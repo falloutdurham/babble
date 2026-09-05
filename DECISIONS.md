@@ -6,6 +6,17 @@ Ambiguities in the build plan, and the simpler option taken.
   an array of SQL batches; `schema_version` stores the index of the last one
   applied. Adding a migration means appending to the array and bumping
   `SCHEMA_VERSION`.
+- **`migrate()` runs entirely inside one transaction.** Every pending migration's
+  DDL plus the `schema_version` bump commit together. SQLite's DDL is transactional,
+  so a crash or error partway through a migration rolls back to the last good
+  version instead of leaving, e.g., a table created but `schema_version` unbumped —
+  which would otherwise wedge the server permanently, since a retry replays the same
+  migration from the top and dies on "table already exists".
+- **`synchronous=NORMAL` under WAL is a deliberate trade, not an oversight.** It is
+  safe from corruption, but per SQLite's own docs can lose the most recently
+  committed transaction(s) on an OS crash or power loss (an ordinary process crash
+  or `kill -9` is still recovered correctly via WAL replay). `FULL` would close that
+  gap at a fsync-per-commit cost; `NORMAL` was chosen for board-scale write volume.
 - **Tag and mention lists cross the SQL boundary via `group_concat`** with `char(31)`
   (unit separator) rather than a second query per row, so listing threads stays a
   single statement. Lists are sorted in Rust since `group_concat` order is unspecified.
