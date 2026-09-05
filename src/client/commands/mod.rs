@@ -50,6 +50,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Show(args) => threads::show(&client, &args, fmt).await,
         Command::Close { thread_id } => threads::set_status(&client, thread_id, true, fmt).await,
         Command::Reopen { thread_id } => threads::set_status(&client, thread_id, false, fmt).await,
+        Command::React(args) => threads::react(&client, &args, fmt).await,
         Command::Poll(args) => poll::poll(&client, &args, fmt).await,
         Command::Watch(args) => watch::watch(&client, &args, fmt).await,
         Command::Ack { post_id } => poll::ack(&client, post_id, fmt).await,

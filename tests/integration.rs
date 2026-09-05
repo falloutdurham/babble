@@ -813,3 +813,261 @@ async fn your_own_post_does_not_satisfy_your_own_long_poll() {
     assert!(feed.posts.is_empty(), "own post satisfied own long-poll");
     assert!(started.elapsed() >= Duration::from_millis(900));
 }
+
+// --------------------------------------------------------------- reactions
+
+#[tokio::test]
+async fn reactions_accumulate_and_name_who_left_them() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+    let t = alice
+        .create_thread(&new_thread("t", "worth reacting to", &[]))
+        .await
+        .unwrap();
+    let post_id = t.posts[0].id;
+
+    let p = bob.react(post_id, "👀").await.unwrap();
+    assert_eq!(p.reactions.len(), 1);
+    assert_eq!(p.reactions[0].emoji, "👀");
+    assert_eq!(p.reactions[0].by, vec!["bob"]);
+
+    let p = alice.react(post_id, "👀").await.unwrap();
+    assert_eq!(p.reactions[0].by, vec!["alice", "bob"]);
+
+    // A second emoji sorts under the more-reacted one.
+    let p = alice.react(post_id, "🚀").await.unwrap();
+    assert_eq!(p.reactions.len(), 2);
+    assert_eq!(p.reactions[0].emoji, "👀");
+    assert_eq!(p.reactions[1].emoji, "🚀");
+}
+
+#[tokio::test]
+async fn reacting_twice_the_same_way_is_a_no_op() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+    let id = t.posts[0].id;
+
+    alice.react(id, "✅").await.unwrap();
+    // A retry after a dropped response must not fail or double-count.
+    let p = alice.react(id, "✅").await.unwrap();
+    assert_eq!(p.reactions.len(), 1);
+    assert_eq!(p.reactions[0].by, vec!["alice"]);
+}
+
+#[tokio::test]
+async fn a_reaction_can_be_taken_back() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+    let t = alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+    let id = t.posts[0].id;
+
+    alice.react(id, "👍").await.unwrap();
+    bob.react(id, "👍").await.unwrap();
+
+    // Removing mine leaves theirs.
+    let p = alice.unreact(id, "👍").await.unwrap();
+    assert_eq!(p.reactions[0].by, vec!["bob"]);
+
+    // The last one removed clears the emoji entirely.
+    let p = bob.unreact(id, "👍").await.unwrap();
+    assert!(p.reactions.is_empty());
+
+    // Removing one that was never there is harmless.
+    assert!(alice.unreact(id, "👍").await.is_ok());
+}
+
+#[tokio::test]
+async fn reactions_show_up_wherever_posts_do() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+    let t = alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+    bob.react(t.posts[0].id, "🎉").await.unwrap();
+
+    let detail = bob.show_thread(t.thread.id, None).await.unwrap();
+    assert_eq!(detail.posts[0].reactions[0].emoji, "🎉");
+
+    let feed = bob
+        .feed(&FeedRequest::since(0).include_self(true))
+        .await
+        .unwrap();
+    assert_eq!(feed.posts[0].reactions[0].emoji, "🎉");
+}
+
+#[tokio::test]
+async fn a_reaction_has_to_be_an_emoji() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+    let id = t.posts[0].id;
+
+    for bad in ["lgtm", "", ":+1:", "👀 👍", "1"] {
+        let err = alice.react(id, bad).await.unwrap_err();
+        assert_eq!(err.kind, Kind::Config, "accepted {bad:?}");
+    }
+    // Multi-codepoint emoji are fine.
+    for good in ["❤️", "👍🏽", "🏴󠁧󠁢󠁳󠁣󠁴󠁿"] {
+        assert!(alice.unreact(id, good).await.is_ok());
+    }
+}
+
+#[tokio::test]
+async fn one_agent_cannot_paper_a_post_in_reactions() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+    let id = t.posts[0].id;
+
+    for e in ["👀", "✅", "👍", "👎", "🎉", "❤️", "🤔", "🚀"] {
+        alice.react(id, e).await.unwrap();
+    }
+    let err = alice.react(id, "😀").await.unwrap_err();
+    assert_eq!(err.kind, Kind::Config);
+
+    // Another agent still has their own budget.
+    let bob = h.agent("bob").await;
+    assert!(bob.react(id, "😀").await.is_ok());
+}
+
+#[tokio::test]
+async fn reacting_to_a_missing_post_is_a_404() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    assert_eq!(
+        alice.react(9999, "👀").await.unwrap_err().kind,
+        Kind::NotFound
+    );
+    assert_eq!(
+        alice.unreact(9999, "👀").await.unwrap_err().kind,
+        Kind::NotFound
+    );
+}
+
+#[tokio::test]
+async fn a_reaction_does_not_wake_a_long_poll() {
+    // Reactions are not posts. Waking every follower for one would be noise,
+    // and the feed query would return nothing anyway.
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+    let t = alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+    let id = t.posts[0].id;
+
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        alice.react(id, "👀").await.expect("react");
+    });
+
+    let started = Instant::now();
+    let feed = bob
+        .feed(&FeedRequest::since(id).wait(Some(1)))
+        .await
+        .unwrap();
+    assert!(feed.posts.is_empty());
+    assert!(started.elapsed() >= Duration::from_millis(900));
+}
+
+#[tokio::test]
+async fn a_v1_database_gains_reactions_without_losing_anything() {
+    // The first migration this project has actually had to perform.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db = dir.path().join("b.sqlite").to_string_lossy().into_owned();
+
+    // Build a v1 database by hand: schema as it shipped, with real content.
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open");
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (1);
+             CREATE TABLE agents (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+               token_hash TEXT NOT NULL UNIQUE, is_admin INTEGER NOT NULL DEFAULT 0,
+               created_at TEXT NOT NULL);
+             CREATE TABLE threads (id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+               author_id INTEGER NOT NULL REFERENCES agents(id),
+               status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+               created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT,
+               thread_id INTEGER NOT NULL REFERENCES threads(id),
+               author_id INTEGER NOT NULL REFERENCES agents(id),
+               body TEXT NOT NULL, created_at TEXT NOT NULL);
+             CREATE INDEX posts_thread ON posts(thread_id, id);
+             CREATE TABLE thread_tags (thread_id INTEGER NOT NULL REFERENCES threads(id),
+               tag TEXT NOT NULL, PRIMARY KEY (thread_id, tag));
+             CREATE TABLE mentions (post_id INTEGER NOT NULL REFERENCES posts(id),
+               agent_id INTEGER NOT NULL REFERENCES agents(id), PRIMARY KEY (post_id, agent_id));
+             CREATE TABLE cursors (agent_id INTEGER PRIMARY KEY REFERENCES agents(id),
+               last_seen INTEGER NOT NULL DEFAULT 0);",
+        )
+        .expect("v1 schema");
+        let hash = babble::server::auth::hash_token(ADMIN);
+        conn.execute(
+            "INSERT INTO agents (id, name, token_hash, is_admin, created_at)
+             VALUES (1, 'admin', ?1, 1, '2026-01-01T00:00:00Z')",
+            [&hash],
+        )
+        .expect("agent");
+        conn.execute_batch(
+            "INSERT INTO threads (id,title,author_id,status,created_at,updated_at)
+               VALUES (1,'from v1',1,'open','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO posts (id,thread_id,author_id,body,created_at)
+               VALUES (1,1,1,'written before reactions existed','2026-01-01T00:00:00Z');",
+        )
+        .expect("content");
+    }
+
+    // Starting the server migrates it in place.
+    let args = ServeArgs {
+        db: db.clone(),
+        bind: "127.0.0.1:0".into(),
+        admin_token: Some(ADMIN.into()),
+        post_rate: 0,
+    };
+    let (listener, state) = server::bind(&args).await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = server::serve(listener, state, std::future::pending()).await;
+    });
+    let client = Client::new(Resolved {
+        url: format!("http://{addr}"),
+        token: ADMIN.into(),
+    })
+    .expect("client");
+
+    // The old content is intact...
+    let detail = client.show_thread(1, None).await.unwrap();
+    assert_eq!(detail.thread.title, "from v1");
+    assert_eq!(detail.posts[0].body, "written before reactions existed");
+    assert!(detail.posts[0].reactions.is_empty());
+
+    // ...and the new feature works on it.
+    let p = client.react(1, "🎉").await.unwrap();
+    assert_eq!(p.reactions[0].emoji, "🎉");
+
+    // Re-opening is a no-op, not a re-run.
+    let version: i64 = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+}

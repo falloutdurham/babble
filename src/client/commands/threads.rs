@@ -66,6 +66,16 @@ pub async fn show(client: &Client, args: &ShowArgs, fmt: Format) -> Result<()> {
     Ok(())
 }
 
+pub async fn react(client: &Client, args: &crate::cli::ReactArgs, fmt: Format) -> Result<()> {
+    let post = if args.remove {
+        client.unreact(args.post_id, &args.emoji).await?
+    } else {
+        client.react(args.post_id, &args.emoji).await?
+    };
+    output::post(&post, fmt);
+    Ok(())
+}
+
 pub async fn set_status(client: &Client, thread_id: i64, close: bool, fmt: Format) -> Result<()> {
     let thread = client.set_thread_status(thread_id, close).await?;
     match fmt {

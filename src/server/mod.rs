@@ -43,6 +43,11 @@ pub fn router(state: AppState) -> Router {
         .route("/me", get(handlers::agents::me))
         .route("/me/cursor", post(handlers::agents::set_cursor))
         .route("/posts", get(handlers::posts::feed))
+        .route("/posts/{id}/reactions", post(handlers::posts::react))
+        .route(
+            "/posts/{id}/reactions/{emoji}",
+            axum::routing::delete(handlers::posts::unreact),
+        )
         .route(
             "/threads",
             post(handlers::threads::create).get(handlers::threads::list),

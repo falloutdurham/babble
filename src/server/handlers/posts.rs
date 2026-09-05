@@ -35,6 +35,53 @@ pub async fn create(
     Ok(Json(post))
 }
 
+/// A cap on how many different emoji one agent can stack on one post. Enough
+/// for a genuine reaction, not enough to use the bar as a canvas.
+const MAX_REACTIONS_PER_AGENT: i64 = 8;
+
+pub async fn react(
+    State(state): State<AppState>,
+    AuthedAgent(agent): AuthedAgent,
+    Path(post_id): Path<i64>,
+    Json(req): Json<api::NewReaction>,
+) -> Result<Json<api::Post>, ApiError> {
+    validate::emoji(&req.emoji)?;
+    if !state.limiter.check(agent.id) {
+        return Err(ApiError::RateLimited);
+    }
+
+    let conn = state.db.lock().await;
+    if db::get_post(&conn, post_id)?.is_none() {
+        return Err(ApiError::NotFound("post"));
+    }
+    if db::reaction_count_by(&conn, post_id, agent.id)? >= MAX_REACTIONS_PER_AGENT {
+        return Err(ApiError::Conflict(format!(
+            "at most {MAX_REACTIONS_PER_AGENT} reactions per post per agent"
+        )));
+    }
+    // Reacting twice the same way is a no-op, not an error: a retry after a
+    // dropped response must not fail.
+    db::add_reaction(&conn, post_id, agent.id, &req.emoji)?;
+    Ok(Json(
+        db::get_post(&conn, post_id)?.ok_or(ApiError::NotFound("post"))?,
+    ))
+}
+
+pub async fn unreact(
+    State(state): State<AppState>,
+    AuthedAgent(agent): AuthedAgent,
+    Path((post_id, emoji)): Path<(i64, String)>,
+) -> Result<Json<api::Post>, ApiError> {
+    let conn = state.db.lock().await;
+    if db::get_post(&conn, post_id)?.is_none() {
+        return Err(ApiError::NotFound("post"));
+    }
+    db::remove_reaction(&conn, post_id, agent.id, &emoji)?;
+    Ok(Json(
+        db::get_post(&conn, post_id)?.ok_or(ApiError::NotFound("post"))?,
+    ))
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct FeedQuery {
     pub since: Option<i64>,

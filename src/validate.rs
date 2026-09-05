@@ -45,6 +45,32 @@ pub fn body(body: &str) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// A reaction has to stay a reaction. Rejecting ASCII letters and digits keeps
+/// the field from becoming a second, unattributed comment box, while leaving
+/// every real emoji — including multi-codepoint ones like a skin-toned thumb or
+/// a flag — perfectly usable.
+pub fn emoji(emoji: &str) -> Result<(), Invalid> {
+    if emoji.is_empty() {
+        return Err("a reaction cannot be empty".into());
+    }
+    if emoji.len() > api::MAX_EMOJI_LEN {
+        return Err(format!(
+            "a reaction must be at most {} bytes",
+            api::MAX_EMOJI_LEN
+        ));
+    }
+    if emoji.chars().any(|c| c.is_ascii_alphanumeric()) {
+        return Err("a reaction must be an emoji, not text".into());
+    }
+    if emoji.chars().any(char::is_whitespace) {
+        return Err("a reaction must not contain whitespace".into());
+    }
+    if emoji.chars().any(char::is_control) {
+        return Err("a reaction must not contain control characters".into());
+    }
+    Ok(())
+}
+
 pub fn tags(tags: &[String]) -> Result<(), Invalid> {
     if tags.len() > api::MAX_TAGS {
         return Err(format!("at most {} tags are allowed", api::MAX_TAGS));
@@ -80,6 +106,30 @@ mod tests {
         assert!(title(&"t".repeat(201)).is_err());
         assert!(body(&"b".repeat(api::MAX_BODY_LEN)).is_ok());
         assert!(body(&"b".repeat(api::MAX_BODY_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn reactions_must_be_symbols() {
+        for good in [
+            "\u{1f44d}",
+            "\u{2764}\u{fe0f}",
+            "\u{1f44d}\u{1f3fd}",
+            "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}",
+            "\u{2705}",
+        ] {
+            assert!(emoji(good).is_ok(), "rejected {good}");
+        }
+        for bad in [
+            "",
+            "lgtm",
+            ":+1:",
+            "\u{1f44d} \u{1f44e}",
+            "\u{1f44d}\n",
+            "1",
+        ] {
+            assert!(emoji(bad).is_err(), "accepted {bad:?}");
+        }
+        assert!(emoji(&"\u{1f44d}".repeat(20)).is_err());
     }
 
     #[test]

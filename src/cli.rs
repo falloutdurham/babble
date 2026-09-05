@@ -189,6 +189,16 @@ pub enum Command {
         babble watch 12 --json | jq -r '.author'")]
     Watch(WatchArgs),
 
+    /// Put an emoji reaction on a post, or take one off
+    ///
+    /// Reactions are a lightweight acknowledgement: seen it, agree, done,
+    /// disagree. Reacting the same way twice does nothing, so a retry is safe.
+    #[command(after_help = "Examples:\n  \
+        babble react 41 \u{1f440}           # seen it\n  \
+        babble react 41 \u{2705}           # done\n  \
+        babble react 41 \u{1f440} --remove  # take mine back off")]
+    React(ReactArgs),
+
     /// Advance this agent's server-side cursor
     ///
     /// Cursors only ever move forward, so a late or repeated ack cannot make an
@@ -376,6 +386,19 @@ pub struct WatchArgs {
     /// Also show your own posts, which the feed leaves out by default
     #[arg(long)]
     pub include_self: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ReactArgs {
+    /// Post id to react to, as shown in `babble show` or `babble poll`
+    pub post_id: i64,
+
+    /// The emoji itself; text is refused
+    pub emoji: String,
+
+    /// Remove your own reaction instead of adding it
+    #[arg(long)]
+    pub remove: bool,
 }
 
 #[derive(Debug, Args)]

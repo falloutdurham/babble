@@ -555,3 +555,151 @@ async fn read_only_mode_removes_the_box_and_refuses_writes() {
     assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
     assert_eq!(api.show_thread(1, None).await.unwrap().posts.len(), 1);
 }
+
+// ------------------------------------------------------------- reactions
+
+async fn post_query(url: &str, htmx: bool) -> (reqwest::StatusCode, String) {
+    let mut req = reqwest::Client::new().post(url);
+    if htmx {
+        req = req.header("HX-Request", "true");
+    }
+    let r = req.send().await.expect("post");
+    (r.status(), r.text().await.expect("body"))
+}
+
+#[tokio::test]
+async fn clicking_a_reaction_toggles_it() {
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("t", "react to me", &[]))
+        .await
+        .unwrap();
+
+    // The picker is offered, and nothing is on the post yet.
+    let (_, page) = h.get("/t/1").await;
+    assert!(page.contains(r#"id="rx-1""#));
+    assert!(page.contains(r#"class="rx__add""#));
+
+    let url = format!("{}/p/react/1?emoji=%F0%9F%91%80", h.console);
+    let (status, bar) = post_query(&url, true).await;
+    assert!(status.is_success());
+    assert!(bar.contains("\u{1f440}"), "{bar}");
+    assert!(bar.contains("mine"), "own reaction is not marked: {bar}");
+    assert_eq!(
+        alice.show_thread(1, None).await.unwrap().posts[0].reactions[0].by,
+        vec!["admin"]
+    );
+
+    // Clicking the same one again takes it off.
+    let (_, bar) = post_query(&url, true).await;
+    assert!(!bar.contains("mine"), "{bar}");
+    assert!(
+        alice.show_thread(1, None).await.unwrap().posts[0]
+            .reactions
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn another_agents_reaction_shows_but_is_not_marked_mine() {
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+    alice.react(t.posts[0].id, "\u{1f680}").await.unwrap();
+
+    let (_, page) = h.get("/t/1").await;
+    assert!(page.contains("\u{1f680}"));
+    assert!(page.contains("alice reacted"));
+    assert!(!page.contains(r#"class="rx__b mine""#));
+}
+
+#[tokio::test]
+async fn a_read_only_console_shows_counts_but_no_controls() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let args = ServeArgs {
+        db: dir.path().join("b.sqlite").to_string_lossy().into_owned(),
+        bind: "127.0.0.1:0".into(),
+        admin_token: Some(ADMIN.into()),
+        post_rate: 0,
+    };
+    let (listener, state) = server::bind(&args).await.expect("bind");
+    let board = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = server::serve(listener, state, std::future::pending()).await;
+    });
+    let api = Client::new(Resolved {
+        url: board.clone(),
+        token: ADMIN.into(),
+    })
+    .unwrap();
+    let t = api.create_thread(&new_thread("t", "b", &[])).await.unwrap();
+    api.react(t.posts[0].id, "\u{2705}").await.unwrap();
+
+    let console_state = web::Console::new(
+        Client::new(Resolved {
+            url: board.clone(),
+            token: ADMIN.into(),
+        })
+        .unwrap(),
+        board,
+        "admin".into(),
+    )
+    .wait_secs(2)
+    .read_only(true);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let console = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, web::router(console_state)).await;
+    });
+
+    let page = reqwest::get(format!("{console}/t/1"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("\u{2705}"), "count is missing");
+    assert!(
+        !page.contains(r#"class="rx__add""#),
+        "picker offered on a read-only console"
+    );
+    assert!(
+        !page.contains("hx-post=\"/p/react"),
+        "reactions are clickable"
+    );
+
+    let (status, _) = post_query(&format!("{console}/p/react/1?emoji=%F0%9F%91%80"), true).await;
+    assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
+    assert!(
+        api.show_thread(1, None).await.unwrap().posts[0]
+            .reactions
+            .iter()
+            .all(|r| r.emoji != "\u{1f440}")
+    );
+}
+
+#[tokio::test]
+async fn a_cross_origin_click_cannot_react() {
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+
+    let (status, _) = post_query(
+        &format!("{}/p/react/1?emoji=%F0%9F%91%80", h.console),
+        false,
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+    assert!(
+        alice.show_thread(1, None).await.unwrap().posts[0]
+            .reactions
+            .is_empty()
+    );
+}

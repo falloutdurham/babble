@@ -138,6 +138,25 @@ background:var(--link);color:var(--panel);cursor:pointer}
 .compose button:disabled{opacity:.5;cursor:default}
 .compose .hint{font-family:var(--mono);font-size:.68rem;color:var(--faint)}
 .compose .err{font-size:.8rem}
+.rx{display:flex;gap:.3rem;align-items:center;flex-wrap:wrap;margin-top:.5rem}
+.rx__b{font:inherit;font-size:.8rem;line-height:1.2;padding:.15rem .45rem;cursor:pointer;
+border:1px solid var(--rule);border-radius:999px;background:var(--panel);color:var(--soft);
+display:inline-flex;gap:.3rem;align-items:center}
+.rx__b:hover{border-color:var(--faint)}
+.rx__b.mine{border-color:var(--link);color:var(--link);background:color-mix(in srgb,var(--link) 10%,var(--panel))}
+.rx__b .n{font-family:var(--mono);font-size:.7rem;font-variant-numeric:tabular-nums}
+.rx__b.flat{cursor:default}
+.rx__add{position:relative}
+.rx__add summary{list-style:none;cursor:pointer;font-size:.8rem;padding:.15rem .45rem;
+border:1px dashed var(--rule);border-radius:999px;color:var(--faint)}
+.rx__add summary::-webkit-details-marker{display:none}
+.rx__add summary:hover{border-color:var(--faint);color:var(--soft)}
+.rx__pal{position:absolute;z-index:4;bottom:1.9rem;left:0;display:flex;gap:.2rem;
+padding:.3rem;background:var(--panel);border:1px solid var(--rule);border-radius:4px;
+box-shadow:0 6px 20px rgba(0,0,0,.14)}
+.rx__pal button{font-size:1rem;line-height:1;padding:.25rem;border:0;border-radius:3px;
+background:none;cursor:pointer}
+.rx__pal button:hover{background:var(--panel-2)}
 .shut{border-top:1px solid var(--rule);padding:.9rem 1.1rem;background:var(--panel-2);
 font-family:var(--mono);font-size:.75rem;color:var(--faint)}
 .empty{padding:2rem 1.1rem;color:var(--faint);text-align:center}
@@ -217,7 +236,87 @@ fn body_html(body: &str) -> String {
     out
 }
 
-pub fn post(p: &api::Post, show_thread: bool) -> String {
+/// Percent-encode a value. Emoji are multi-byte, and they end up inside an
+/// `hx-post` URL.
+fn pct(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Emoji offered in the picker. Deliberately few: a reaction should be a
+/// reflex, and a long menu turns it into a decision.
+const PALETTE: [&str; 8] = [
+    "\u{1f440}",
+    "\u{2705}",
+    "\u{1f44d}",
+    "\u{1f44e}",
+    "\u{1f389}",
+    "\u{2764}\u{fe0f}",
+    "\u{1f914}",
+    "\u{1f680}",
+];
+
+/// The reaction bar for one post. `me` is `None` on a read-only console, which
+/// renders the same counts with nothing to click.
+pub fn reactions(p: &api::Post, me: Option<&str>) -> String {
+    let buttons: String = p
+        .reactions
+        .iter()
+        .map(|r| {
+            let mine = me.is_some_and(|me| r.by.iter().any(|b| b == me));
+            let title = format!("{} reacted", r.by.join(", "));
+            match me {
+                Some(_) => format!(
+                    r##"<button class="rx__b{cls}" title="{title}" hx-post="/p/react/{id}?emoji={e}" hx-target="#rx-{id}" hx-swap="outerHTML">{emoji}<span class="n">{n}</span></button>"##,
+                    cls = if mine { " mine" } else { "" },
+                    title = esc(&title),
+                    id = p.id,
+                    e = pct(&r.emoji),
+                    emoji = esc(&r.emoji),
+                    n = r.by.len(),
+                ),
+                None => format!(
+                    r#"<span class="rx__b flat" title="{title}">{emoji}<span class="n">{n}</span></span>"#,
+                    title = esc(&title),
+                    emoji = esc(&r.emoji),
+                    n = r.by.len(),
+                ),
+            }
+        })
+        .collect();
+
+    let add = match me {
+        Some(_) => {
+            let choices: String = PALETTE
+                .iter()
+                .map(|e| {
+                    format!(
+                        r##"<button title="{t}" hx-post="/p/react/{id}?emoji={enc}" hx-target="#rx-{id}" hx-swap="outerHTML">{t}</button>"##,
+                        t = esc(e),
+                        id = p.id,
+                        enc = pct(e),
+                    )
+                })
+                .collect();
+            format!(
+                r#"<details class="rx__add"><summary aria-label="Add a reaction">+</summary><div class="rx__pal">{choices}</div></details>"#
+            )
+        }
+        None => String::new(),
+    };
+
+    format!(r#"<div class="rx" id="rx-{}">{buttons}{add}</div>"#, p.id)
+}
+
+pub fn post(p: &api::Post, show_thread: bool, me: Option<&str>) -> String {
     let where_ = if show_thread {
         format!(
             r#" · <a href="/t/{}">#{} {}</a>"#,
@@ -232,6 +331,7 @@ pub fn post(p: &api::Post, show_thread: bool) -> String {
         r#"<article class="post" style="--h:{h}" id="p{id}">
   <div class="post__m"><span>{id}</span>{who}{where_}<span class="when">{when}</span></div>
   <div class="post__b">{body}</div>
+  {rx}
 </article>"#,
         h = hue(&p.author),
         id = p.id,
@@ -239,6 +339,7 @@ pub fn post(p: &api::Post, show_thread: bool) -> String {
         where_ = where_,
         when = ts(&p.created_at),
         body = body_html(&p.body),
+        rx = reactions(p, me),
     )
 }
 
@@ -352,9 +453,9 @@ pub fn cannot_post(reason: &str) -> String {
     format!(r#"<div class="shut">{}</div>"#, esc(reason))
 }
 
-pub fn thread_detail(d: &api::ThreadDetail, footer: &str) -> String {
+pub fn thread_detail(d: &api::ThreadDetail, footer: &str, me: Option<&str>) -> String {
     let t = &d.thread;
-    let posts: String = d.posts.iter().map(|p| post(p, false)).collect();
+    let posts: String = d.posts.iter().map(|p| post(p, false, me)).collect();
     format!(
         r#"<div class="panel">
   <div class="thead">
@@ -382,8 +483,8 @@ pub fn thread_detail(d: &api::ThreadDetail, footer: &str) -> String {
     )
 }
 
-pub fn live(posts: &[api::Post], since: i64) -> String {
-    let rendered: String = posts.iter().map(|p| post(p, true)).collect();
+pub fn live(posts: &[api::Post], since: i64, me: Option<&str>) -> String {
+    let rendered: String = posts.iter().map(|p| post(p, true, me)).collect();
     let body = if posts.is_empty() {
         r#"<div class="empty">Nothing posted yet.</div>"#.to_string()
     } else {
@@ -451,8 +552,9 @@ mod tests {
             body: "<img src=x onerror=alert(1)> hi @bob".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
             mentions: vec![],
+            reactions: vec![],
         };
-        let html = post(&p, true);
+        let html = post(&p, true, Some("alice"));
         assert!(!html.contains("<img"));
         assert!(html.contains("&lt;img"));
         // ...but real mentions still render.

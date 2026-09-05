@@ -57,6 +57,13 @@ impl Console {
         self
     }
 
+    /// The identity writes are attributed to, or `None` when the console
+    /// cannot write — which is also what tells the renderer to leave out
+    /// every control.
+    fn writer(&self) -> Option<&str> {
+        (!self.read_only).then_some(self.me.as_str())
+    }
+
     /// Shorten the tail's hold, so a test does not have to sit out a full one.
     pub fn wait_secs(mut self, wait: u64) -> Self {
         self.wait = wait;
@@ -101,6 +108,7 @@ pub fn router(state: Console) -> Router {
         .route("/agents", get(agents))
         .route("/p/feed", get(tail_feed))
         .route("/p/thread/{id}", get(tail_thread))
+        .route("/p/react/{id}", post(react))
         .route("/static/htmx.js", get(htmx))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(state)
@@ -174,7 +182,7 @@ async fn thread(State(s): State<Console>, Path(id): Path<i64>) -> Response {
             s.page(
                 &detail.thread.title,
                 "threads",
-                &render::thread_detail(&detail, &footer),
+                &render::thread_detail(&detail, &footer, s.writer()),
             )
             .into_response()
         }
@@ -250,8 +258,12 @@ async fn live(State(s): State<Console>) -> Response {
             } else {
                 feed.next_since
             };
-            s.page("Live", "live", &render::live(&feed.posts, since))
-                .into_response()
+            s.page(
+                "Live",
+                "live",
+                &render::live(&feed.posts, since, s.writer()),
+            )
+            .into_response()
         }
         Err(e) => s.broken("Live", "live", e),
     }
@@ -263,6 +275,52 @@ async fn agents(State(s): State<Console>) -> Response {
             .page("Agents", "agents", &render::agents(&list.agents))
             .into_response(),
         Err(e) => s.broken("Agents", "agents", e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ReactParams {
+    emoji: String,
+}
+
+/// Toggle a reaction: if this console's agent already reacted that way, the
+/// click takes it back off. Answers with the post's reaction bar alone, which
+/// htmx swaps in place — the rest of the post does not move.
+async fn react(
+    State(s): State<Console>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Query(q): Query<ReactParams>,
+) -> Response {
+    if s.read_only {
+        return (StatusCode::FORBIDDEN, Html(String::new())).into_response();
+    }
+    if !headers.contains_key("hx-request") {
+        return (StatusCode::BAD_REQUEST, Html(String::new())).into_response();
+    }
+
+    let already = match s.client.show_post_reactions(id).await {
+        Ok(post) => post
+            .reactions
+            .iter()
+            .any(|r| r.emoji == q.emoji && r.by.contains(&s.me)),
+        Err(e) => return s.broken("Thread", "threads", e),
+    };
+    let updated = if already {
+        s.client.unreact(id, &q.emoji).await
+    } else {
+        s.client.react(id, &q.emoji).await
+    };
+    match updated {
+        Ok(post) => Html(render::reactions(&post, s.writer())).into_response(),
+        // Leave the bar as it was rather than blanking it on a transient error.
+        Err(e) => {
+            tracing::warn!(post = id, error = %e, "reaction failed");
+            match s.client.show_post_reactions(id).await {
+                Ok(post) => Html(render::reactions(&post, s.writer())).into_response(),
+                Err(e) => s.broken("Thread", "threads", e),
+            }
+        }
     }
 }
 
@@ -296,7 +354,7 @@ async fn tail_turn(
             let posts: String = feed
                 .posts
                 .iter()
-                .map(|p| render::post(p, thread.is_none()))
+                .map(|p| render::post(p, thread.is_none(), s.writer()))
                 .collect();
             Html(format!("{posts}{}", render::tail(path, next, label)))
         }

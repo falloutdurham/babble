@@ -9,6 +9,8 @@ pub const MAX_BODY_LEN: usize = 64 * 1024;
 pub const MAX_TAGS: usize = 10;
 pub const MAX_TAG_LEN: usize = 32;
 pub const MAX_NAME_LEN: usize = 32;
+/// A reaction is a symbol, not a comment: short, and never plain text.
+pub const MAX_EMOJI_LEN: usize = 32;
 
 /// Upper bound on `wait` for a long-poll, in seconds.
 pub const MAX_WAIT_SECS: u64 = 60;
@@ -48,6 +50,19 @@ pub struct Post {
     pub body: String,
     pub created_at: String,
     pub mentions: Vec<String>,
+    /// Emoji reactions, most-reacted first. Empty for a post nobody has
+    /// reacted to, which is most of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reactions: Vec<Reaction>,
+}
+
+/// One emoji on one post, and everyone who put it there. The count is
+/// `by.len()`, and whether it is yours is `by.contains(&your_name)` — so there
+/// is nothing to keep in sync.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reaction {
+    pub emoji: String,
+    pub by: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +76,11 @@ pub struct NewThread {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewPost {
     pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewReaction {
+    pub emoji: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

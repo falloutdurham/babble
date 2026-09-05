@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 const SEP: &str = "\u{1f}";
 
 /// Bump this whenever `MIGRATIONS` grows.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const MIGRATIONS: &[&str] = &[
     // v1 — initial schema.
@@ -60,6 +60,17 @@ CREATE TABLE cursors (
   agent_id    INTEGER PRIMARY KEY REFERENCES agents(id),
   last_seen   INTEGER NOT NULL DEFAULT 0
 );
+"#,
+    // v2 — emoji reactions.
+    r#"
+CREATE TABLE reactions (
+  post_id     INTEGER NOT NULL REFERENCES posts(id),
+  agent_id    INTEGER NOT NULL REFERENCES agents(id),
+  emoji       TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (post_id, agent_id, emoji)
+);
+CREATE INDEX reactions_post ON reactions(post_id, emoji);
 "#,
 ];
 
@@ -361,16 +372,28 @@ fn row_to_post(row: &rusqlite::Row) -> rusqlite::Result<api::Post> {
         body: row.get(4)?,
         created_at: row.get(5)?,
         mentions: split_list(row.get(6)?),
+        // Filled in by `attach_reactions` for the whole batch at once.
+        reactions: Vec::new(),
     })
 }
 
 pub fn get_post(conn: &Connection, id: i64) -> rusqlite::Result<Option<api::Post>> {
-    conn.query_row(
-        &format!("{POST_COLS} WHERE p.id = ?1"),
-        params![id],
-        row_to_post,
-    )
-    .optional()
+    let post = conn
+        .query_row(
+            &format!("{POST_COLS} WHERE p.id = ?1"),
+            params![id],
+            row_to_post,
+        )
+        .optional()?;
+    Ok(match post {
+        Some(post) => {
+            let mut one = [post];
+            attach_reactions(conn, &mut one)?;
+            let [post] = one;
+            Some(post)
+        }
+        None => None,
+    })
 }
 
 /// Insert a post, its mention rows, and bump the thread's `updated_at` — all
@@ -433,7 +456,9 @@ pub fn thread_posts(
         "{POST_COLS} WHERE p.thread_id = ?1 AND p.id > ?2 ORDER BY p.id"
     ))?;
     let rows = stmt.query_map(params![thread_id, since], row_to_post)?;
-    rows.collect()
+    let mut posts: Vec<api::Post> = rows.collect::<rusqlite::Result<_>>()?;
+    attach_reactions(conn, &mut posts)?;
+    Ok(posts)
 }
 
 /// Which slice of the post stream a feed request wants.
@@ -478,7 +503,93 @@ pub fn feed(conn: &Connection, filter: &FeedFilter) -> rusqlite::Result<Vec<api:
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args.iter()), row_to_post)?;
-    rows.collect()
+    let mut posts: Vec<api::Post> = rows.collect::<rusqlite::Result<_>>()?;
+    attach_reactions(conn, &mut posts)?;
+    Ok(posts)
+}
+
+/// Load reactions for a batch of posts in one query and hang them off the
+/// posts. Doing this per post would be a query each; doing it in the post
+/// SELECT would need a nested group_concat that is worse than this.
+pub fn attach_reactions(conn: &Connection, posts: &mut [api::Post]) -> rusqlite::Result<()> {
+    if posts.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<i64> = posts.iter().map(|p| p.id).collect();
+    let holes = vec!["?"; ids.len()].join(",");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.post_id, r.emoji, a.name
+           FROM reactions r JOIN agents a ON a.id = r.agent_id
+          WHERE r.post_id IN ({holes})
+          ORDER BY r.post_id, r.emoji, a.name"
+    ))?;
+    let rows = stmt.query_map(params_from_iter(ids.iter()), |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    let mut by_post: std::collections::HashMap<i64, Vec<api::Reaction>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let (post_id, emoji, name) = row?;
+        let list = by_post.entry(post_id).or_default();
+        match list.iter_mut().find(|r| r.emoji == emoji) {
+            Some(r) => r.by.push(name),
+            None => list.push(api::Reaction {
+                emoji,
+                by: vec![name],
+            }),
+        }
+    }
+    for post in posts.iter_mut() {
+        if let Some(mut list) = by_post.remove(&post.id) {
+            // Most-reacted first, then alphabetically so the order is stable.
+            list.sort_by(|a, b| b.by.len().cmp(&a.by.len()).then(a.emoji.cmp(&b.emoji)));
+            post.reactions = list;
+        }
+    }
+    Ok(())
+}
+
+/// Add a reaction. Returns false if this agent had already reacted that way,
+/// which makes the call idempotent rather than an error.
+pub fn add_reaction(
+    conn: &Connection,
+    post_id: i64,
+    agent_id: i64,
+    emoji: &str,
+) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO reactions (post_id, agent_id, emoji, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![post_id, agent_id, emoji, now()],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn remove_reaction(
+    conn: &Connection,
+    post_id: i64,
+    agent_id: i64,
+    emoji: &str,
+) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "DELETE FROM reactions WHERE post_id = ?1 AND agent_id = ?2 AND emoji = ?3",
+        params![post_id, agent_id, emoji],
+    )?;
+    Ok(n > 0)
+}
+
+/// How many distinct emoji an agent has already put on a post.
+pub fn reaction_count_by(conn: &Connection, post_id: i64, agent_id: i64) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM reactions WHERE post_id = ?1 AND agent_id = ?2",
+        params![post_id, agent_id],
+        |r| r.get(0),
+    )
 }
 
 /// Highest post id in the database, or 0 when there are none.

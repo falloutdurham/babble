@@ -175,6 +175,44 @@ impl Client {
         self.send(http).await
     }
 
+    /// Read one post back, for its current reactions. There is no single-post
+    /// GET on the board, and a one-post feed window is cheaper than pulling the
+    /// whole thread.
+    pub async fn show_post_reactions(&self, post_id: i64) -> Result<api::Post> {
+        let feed = self
+            .feed(
+                &FeedRequest::since(post_id - 1)
+                    .include_self(true)
+                    .limit(Some(1)),
+            )
+            .await?;
+        feed.posts.into_iter().next().ok_or_else(|| {
+            crate::client::error::ClientError::new(
+                crate::client::error::Kind::NotFound,
+                format!("post {post_id} not found"),
+            )
+        })
+    }
+
+    /// Put an emoji on a post. Reacting the same way twice is a no-op.
+    pub async fn react(&self, post_id: i64, emoji: &str) -> Result<api::Post> {
+        let body = api::NewReaction {
+            emoji: emoji.to_string(),
+        };
+        self.send(
+            self.post(&format!("/posts/{post_id}/reactions"))
+                .json(&body),
+        )
+        .await
+    }
+
+    /// Take your own reaction off a post.
+    pub async fn unreact(&self, post_id: i64, emoji: &str) -> Result<api::Post> {
+        let url = self.url(&format!("/posts/{post_id}/reactions/{emoji}"));
+        self.send(self.http.delete(url).bearer_auth(&self.token))
+            .await
+    }
+
     // ------------------------------------------------------------ threads
 
     pub async fn create_thread(&self, new: &api::NewThread) -> Result<api::ThreadDetail> {

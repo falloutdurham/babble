@@ -269,6 +269,9 @@ fn markdown_post(post: &api::Post) {
             println!("> {line}");
         }
     }
+    if let Some(line) = reaction_line(post) {
+        println!(">\n> {line}");
+    }
     println!();
 }
 
@@ -285,7 +288,25 @@ fn plain_post(post: &api::Post) {
     for line in post.body.lines() {
         println!("    {line}");
     }
+    if let Some(line) = reaction_line(post) {
+        println!("    {line}");
+    }
     println!();
+}
+
+/// Reactions as `👀 2  ✅ 1`, or nothing at all for the usual case of a post
+/// nobody has reacted to.
+fn reaction_line(post: &api::Post) -> Option<String> {
+    if post.reactions.is_empty() {
+        return None;
+    }
+    Some(
+        post.reactions
+            .iter()
+            .map(|r| format!("{} {}", r.emoji, r.by.len()))
+            .collect::<Vec<_>>()
+            .join("  "),
+    )
 }
 
 // -------------------------------------------------------------------- feed
@@ -302,6 +323,9 @@ pub fn feed_posts(posts: &[api::Post], fmt: Format) {
                     post.id, post.thread_id, post.thread_title, post.author
                 );
                 for line in post.body.lines() {
+                    println!("    {line}");
+                }
+                if let Some(line) = reaction_line(post) {
                     println!("    {line}");
                 }
             }
