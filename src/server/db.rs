@@ -3,7 +3,7 @@
 use crate::api;
 use crate::mentions;
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_iter};
 
 /// Separator used inside `group_concat` so tag/mention lists survive a round
 /// trip regardless of their contents.
@@ -84,6 +84,32 @@ pub fn open(path: &str) -> Result<Connection> {
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     migrate(&conn)?;
     Ok(conn)
+}
+
+/// Snapshot a database to `dest`, safely, while the server is still running.
+///
+/// `VACUUM INTO` takes a consistent point-in-time copy through SQLite itself,
+/// which is the only correct way to do this under WAL: copying `board.sqlite`
+/// with `cp` captures a file that may hold almost nothing, because the recent
+/// pages are still in the `-wal` sidecar.
+///
+/// The source is opened read-only, so this can never modify a live board.
+/// SQLite refuses to overwrite an existing destination, and that is left as is.
+pub fn backup(src: &str, dest: &str) -> Result<u64> {
+    // SQLite refuses this too, but with a bare "SQL logic error" that tells an
+    // operator nothing about what went wrong.
+    if std::path::Path::new(dest).exists() {
+        anyhow::bail!("{dest} already exists; refusing to overwrite it");
+    }
+    let conn = Connection::open_with_flags(src, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("opening {src} for backup"))?;
+    conn.pragma_update(None, "busy_timeout", 10_000)?;
+    conn.execute("VACUUM INTO ?1", params![dest])
+        .with_context(|| format!("writing the snapshot to {dest}"))?;
+    let size = std::fs::metadata(dest)
+        .with_context(|| format!("reading back {dest}"))?
+        .len();
+    Ok(size)
 }
 
 /// Apply any migrations the database has not seen yet.

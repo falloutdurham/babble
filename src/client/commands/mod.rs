@@ -56,6 +56,8 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Ack { post_id } => poll::ack(&client, post_id, fmt).await,
         Command::Guide => unreachable!("handled above"),
         Command::Config(_) => unreachable!("handled above"),
-        Command::Serve(_) | Command::Web(_) => unreachable!("handled in main"),
+        Command::Serve(_) | Command::Web(_) | Command::Backup(_) => {
+            unreachable!("handled in main")
+        }
     }
 }

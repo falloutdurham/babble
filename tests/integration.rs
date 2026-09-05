@@ -15,6 +15,8 @@ const ADMIN: &str = "test-admin-token";
 
 struct Harness {
     url: String,
+    /// Path to the running board's database, for the backup tests.
+    db_path: String,
     /// Kept alive so the SQLite file outlives the test.
     _dir: tempfile::TempDir,
 }
@@ -45,6 +47,7 @@ impl Harness {
         });
         Harness {
             url: format!("http://{addr}"),
+            db_path: args.db.clone(),
             _dir: dir,
         }
     }
@@ -1070,4 +1073,95 @@ async fn a_v1_database_gains_reactions_without_losing_anything() {
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
     assert_eq!(version, 2);
+}
+
+// ------------------------------------------------------------------ backup
+
+#[tokio::test]
+async fn a_backup_of_a_running_board_is_complete() {
+    // The failure this exists to prevent: under WAL the main database file can
+    // hold almost nothing, so `cp board.sqlite` yields an empty-looking board.
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+
+    let t = alice
+        .create_thread(&new_thread("worth keeping", "the original", &["ops"]))
+        .await
+        .unwrap();
+    for i in 0..25 {
+        bob.reply(t.thread.id, &format!("reply {i}")).await.unwrap();
+    }
+    bob.react(t.posts[0].id, "🎉").await.unwrap();
+    bob.set_cursor(7).await.unwrap();
+
+    let dest = h._dir.path().join("snapshot.sqlite");
+    let dest_str = dest.to_string_lossy().into_owned();
+    // Taken while the server is up and holding the database open.
+    let bytes = babble::server::db::backup(&h.db_path, &dest_str).expect("backup");
+    assert!(bytes > 0);
+
+    // A naive copy of just the main file would miss most of this.
+    let conn = babble::server::db::open(&dest_str).expect("open snapshot");
+    let threads = babble::server::db::list_threads(
+        &conn,
+        &babble::server::db::ThreadQuery {
+            tag: None,
+            status: None,
+            limit: 50,
+            offset: 0,
+        },
+    )
+    .expect("threads");
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].title, "worth keeping");
+    assert_eq!(threads[0].post_count, 26);
+    assert_eq!(threads[0].tags, vec!["ops"]);
+
+    let posts = babble::server::db::thread_posts(&conn, threads[0].id, 0).expect("posts");
+    assert_eq!(posts.len(), 26);
+    assert_eq!(posts[0].body, "the original");
+    assert_eq!(posts[0].reactions[0].emoji, "🎉");
+    assert_eq!(babble::server::db::max_post_id(&conn).unwrap(), 26);
+
+    // Agents and cursors come too, so the snapshot is a usable board.
+    let agents = babble::server::db::list_agents(&conn).expect("agents");
+    assert_eq!(agents.len(), 3); // admin, alice, bob
+    let bob_row = agents.iter().find(|a| a.name == "bob").unwrap();
+    assert_eq!(
+        babble::server::db::get_cursor(&conn, bob_row.id).unwrap(),
+        7
+    );
+}
+
+#[tokio::test]
+async fn a_backup_never_clobbers_an_existing_file() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread("t", "b", &[]))
+        .await
+        .unwrap();
+
+    let dest = h._dir.path().join("taken.sqlite");
+    let dest_str = dest.to_string_lossy().into_owned();
+    std::fs::write(&dest, b"something precious").expect("write");
+
+    assert!(babble::server::db::backup(&h.db_path, &dest_str).is_err());
+    // ...and the file it refused to write is untouched.
+    assert_eq!(std::fs::read(&dest).unwrap(), b"something precious");
+}
+
+#[tokio::test]
+async fn backing_up_a_database_that_is_not_there_fails_loudly() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir
+        .path()
+        .join("nope.sqlite")
+        .to_string_lossy()
+        .into_owned();
+    let dest = dir.path().join("out.sqlite").to_string_lossy().into_owned();
+    assert!(babble::server::db::backup(&missing, &dest).is_err());
+    // A read-only open must not have conjured the source into existence.
+    assert!(!std::path::Path::new(&missing).exists());
 }

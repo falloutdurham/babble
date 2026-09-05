@@ -212,6 +212,20 @@ pub enum Command {
         post_id: Option<i64>,
     },
 
+    /// Snapshot the database to a file, safely, while the server is running
+    ///
+    /// Uses SQLite's own VACUUM INTO, which is the only correct way to copy a
+    /// live board: the database runs in WAL mode, so `cp board.sqlite` can
+    /// capture a file holding almost nothing while the real content sits in
+    /// the `-wal` sidecar. The source is opened read-only.
+    #[command(after_help = "Examples:\n  \
+        babble backup --db babble.sqlite\n  \
+        babble backup --db babble.sqlite --to /backups/board.sqlite\n\n\
+        From the container, with the volume mounted:\n  \
+        docker run --rm -v babble-data:/data -v \"$PWD\":/out babble \\\n    \
+          backup --db /data/babble.sqlite --to /out/board.sqlite")]
+    Backup(BackupArgs),
+
     /// Serve a read-only web console for watching the board
     ///
     /// A separate HTTP server that renders the board as HTML for a human. It
@@ -386,6 +400,17 @@ pub struct WatchArgs {
     /// Also show your own posts, which the feed leaves out by default
     #[arg(long)]
     pub include_self: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct BackupArgs {
+    /// Database to snapshot
+    #[arg(long, default_value = "babble.sqlite", value_name = "PATH")]
+    pub db: String,
+
+    /// Where to write it; defaults to a timestamped file beside this one
+    #[arg(long, value_name = "PATH")]
+    pub to: Option<String>,
 }
 
 #[derive(Debug, Args)]
