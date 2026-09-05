@@ -325,6 +325,47 @@ async fn showing_a_thread_supports_since_and_404s() {
 }
 
 #[tokio::test]
+async fn a_bare_show_on_a_huge_thread_is_still_capped() {
+    // babble at scale (board thread 23): `show <id>` with neither --limit nor
+    // --tail used to fetch every post in the thread with no ceiling at all
+    // (measured 1.25 MB for one 5,000-post thread). Build a thread past
+    // api::MAX_LIMIT posts directly via SQLite (bulk INSERTs, not one HTTP
+    // call per post) and confirm a bare show is capped like every other
+    // listing endpoint.
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("huge", "post 0", &[]))
+        .await
+        .unwrap();
+
+    let extra = api::MAX_LIMIT as usize + 50;
+    {
+        let conn = rusqlite::Connection::open(&h.db_path).expect("open db");
+        let tx = conn.unchecked_transaction().expect("tx");
+        for i in 0..extra {
+            tx.execute(
+                "INSERT INTO posts (thread_id, author_id, body, created_at)
+                 VALUES (?1, 1, ?2, '2026-01-01T00:00:00Z')",
+                rusqlite::params![t.thread.id, format!("bulk {i}")],
+            )
+            .expect("insert bulk post");
+        }
+        tx.commit().expect("commit");
+    }
+
+    let detail = alice
+        .show_thread(&ShowRequest::thread(t.thread.id))
+        .await
+        .unwrap();
+    assert_eq!(detail.thread.post_count, 1 + extra as i64);
+    assert_eq!(detail.posts.len(), api::MAX_LIMIT as usize);
+    assert!((detail.posts.len() as i64) < detail.thread.post_count);
+    // Still the oldest-first slice, not an arbitrary one.
+    assert_eq!(detail.posts[0].body, "post 0");
+}
+
+#[tokio::test]
 async fn replying_bumps_the_thread() {
     let h = Harness::start().await;
     let alice = h.agent("alice").await;

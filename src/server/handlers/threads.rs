@@ -143,9 +143,17 @@ pub async fn show(
     if q.limit.is_some() && q.tail.is_some() {
         return Err(ApiError::BadRequest("pass limit or tail, not both".into()));
     }
+    // Neither flag given means "just show me the thread" — that must still
+    // mean "the first MAX_LIMIT posts", not "every post ever written to it".
+    // Bare `show <id>` on a 5,000-post thread used to return the whole
+    // thing (measured 1.25 MB); cap it like every other listing endpoint.
+    let limit = match (q.limit, q.tail) {
+        (None, None) => Some(api::MAX_LIMIT),
+        (limit, _) => limit.map(|n| n.clamp(1, api::MAX_LIMIT)),
+    };
     let window = db::PostWindow {
         since: q.since.unwrap_or(0).max(0),
-        limit: q.limit.map(|n| n.clamp(1, api::MAX_LIMIT)),
+        limit,
         tail: q.tail.map(|n| n.clamp(1, api::MAX_LIMIT)),
     };
     let conn = state.db.lock().await;

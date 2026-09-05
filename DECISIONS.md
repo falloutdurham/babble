@@ -190,6 +190,15 @@ Ambiguities in the build plan, and the simpler option taken.
   true and equally worth knowing.
 - **The console renders the last 50 posts** with a "show the whole thread" link,
   because a 120-post thread was a 140 KB page.
+- **`show` with neither `limit` nor `tail` is capped at `MAX_LIMIT` (500), not
+  unbounded.** A scale survey measured `show <id>` on a 5,000-post thread returning
+  1.25 MB with no ceiling at all — the tail-based fix above only ever capped the
+  *opt-in* path; the bare default fell through to SQLite's `LIMIT -1`. The console's
+  `?all=1` "show the whole thread" link goes through the same bare-default path, so
+  above 500 posts it is capped too rather than truly unbounded; past that point the
+  console says "showing the first 500 of N" and points at the CLI (`--since`) for the
+  rest, rather than re-offering a link back to itself that would look like progress
+  but return the same page.
 
 ## Search
 

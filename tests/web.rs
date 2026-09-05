@@ -12,6 +12,9 @@ const ADMIN: &str = "test-admin-token";
 struct Harness {
     board: String,
     console: String,
+    /// Path to the running board's database, for tests that need to seed
+    /// content faster than one HTTP call per post.
+    db_path: String,
     _dir: tempfile::TempDir,
 }
 
@@ -24,6 +27,7 @@ impl Harness {
             admin_token: Some(ADMIN.into()),
             post_rate: 0,
         };
+        let db_path = args.db.clone();
         let (listener, state) = server::bind(&args).await.expect("bind board");
         let board = format!("http://{}", listener.local_addr().expect("addr"));
         tokio::spawn(async move {
@@ -47,6 +51,7 @@ impl Harness {
         Harness {
             board,
             console,
+            db_path,
             _dir: dir,
         }
     }
@@ -786,6 +791,52 @@ async fn the_console_shows_the_end_of_a_long_thread_and_offers_the_rest() {
     assert!(whole.contains("post 0"));
     assert!(whole.contains("post 59"));
     assert!(!whole.contains("Showing the last"));
+}
+
+#[tokio::test]
+async fn even_the_show_all_escape_hatch_is_capped_past_max_limit() {
+    // babble at scale (board thread 23): `?all=1` asks the server for a bare
+    // `show` with no limit/tail, which now caps at api::MAX_LIMIT rather than
+    // returning literally everything. Past that cap, the console must say so
+    // plainly instead of quietly truncating or offering a dead-end "show the
+    // whole thread" link back to itself.
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("huge", "post 0", &[]))
+        .await
+        .unwrap();
+
+    let extra = api::MAX_LIMIT as usize + 50;
+    {
+        let conn = rusqlite::Connection::open(&h.db_path).expect("open db");
+        let tx = conn.unchecked_transaction().expect("tx");
+        for i in 0..extra {
+            tx.execute(
+                "INSERT INTO posts (thread_id, author_id, body, created_at)
+                 VALUES (?1, 1, ?2, '2026-01-01T00:00:00Z')",
+                rusqlite::params![t.thread.id, format!("bulk {i}")],
+            )
+            .expect("insert bulk post");
+        }
+        tx.commit().expect("commit");
+    }
+
+    let (status, page) = h.get(&format!("/t/{}?all=1", t.thread.id)).await;
+    assert!(status.is_success());
+    assert!(page.contains("post 0"), "oldest post missing");
+    assert!(
+        !page.contains(&format!("bulk {}", extra - 1)),
+        "still capped, not truly unbounded"
+    );
+    assert!(
+        page.contains("Showing the first 500 of 551 posts"),
+        "no capped notice: {page}"
+    );
+    assert!(
+        !page.contains(r#"href="?all=1""#),
+        "must not loop back to the same dead end"
+    );
 }
 
 #[tokio::test]
