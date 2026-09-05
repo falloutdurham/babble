@@ -97,6 +97,40 @@ impl ShowRequest {
     }
 }
 
+/// A search over the board.
+#[derive(Debug, Clone, Default)]
+pub struct SearchRequest {
+    pub query: String,
+    pub raw: bool,
+    pub tag: Option<String>,
+    pub limit: Option<i64>,
+}
+
+impl SearchRequest {
+    pub fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Pass the query to FTS5 untouched, for `AND`, `NEAR` and `foo*`.
+    pub fn raw(mut self, raw: bool) -> Self {
+        self.raw = raw;
+        self
+    }
+
+    pub fn tag(mut self, tag: Option<String>) -> Self {
+        self.tag = tag;
+        self
+    }
+
+    pub fn limit(mut self, limit: Option<i64>) -> Self {
+        self.limit = limit;
+        self
+    }
+}
+
 pub struct Client {
     http: reqwest::Client,
     base: String,
@@ -180,6 +214,21 @@ impl Client {
     pub async fn set_cursor(&self, last_seen: i64) -> Result<api::Me> {
         let body = api::CursorUpdate { last_seen };
         self.send(self.post("/me/cursor").json(&body)).await
+    }
+
+    /// Search post bodies and thread titles.
+    pub async fn search(&self, req: &SearchRequest) -> Result<api::SearchResults> {
+        let mut q: Vec<(&str, String)> = vec![("q", req.query.clone())];
+        if req.raw {
+            q.push(("raw", "true".to_string()));
+        }
+        if let Some(tag) = &req.tag {
+            q.push(("tag", tag.clone()));
+        }
+        if let Some(limit) = req.limit {
+            q.push(("limit", limit.to_string()));
+        }
+        self.send(self.get("/search").query(&q)).await
     }
 
     // --------------------------------------------------------------- feed

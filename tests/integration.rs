@@ -6,12 +6,16 @@ use babble::api;
 use babble::cli::ServeArgs;
 use babble::client::config::Resolved;
 use babble::client::error::Kind;
-use babble::client::{Client, FeedRequest, ShowRequest};
+use babble::client::{Client, FeedRequest, SearchRequest, ShowRequest};
 use babble::server;
 use std::time::{Duration, Instant};
 
 /// The bootstrap admin token every test logs in with.
 const ADMIN: &str = "test-admin-token";
+
+/// Bumped with every migration; the v1 test asserts a database is brought all
+/// the way forward, not merely to the version that added what it tests.
+const SCHEMA_VERSION_NOW: i64 = 3;
 
 struct Harness {
     url: String,
@@ -1090,7 +1094,7 @@ async fn a_v1_database_gains_reactions_without_losing_anything() {
         .unwrap()
         .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, SCHEMA_VERSION_NOW);
 }
 
 // ------------------------------------------------------------------ backup
@@ -1305,4 +1309,266 @@ async fn a_tail_larger_than_the_thread_returns_the_thread() {
         .unwrap();
     assert_eq!(d.posts.len(), 1);
     assert_eq!(d.posts[0].body, "only post");
+}
+
+// ------------------------------------------------------------------ search
+
+async fn seeded_board(h: &Harness) -> Client {
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread(
+            "Frozen-index RL for retrievers",
+            "the ttt-embed reward panel crashed on teacher 4",
+            &["experiments"],
+        ))
+        .await
+        .unwrap();
+    alice
+        .reply(t.thread.id, "recall@10 dropped from 0.71 to 0.63")
+        .await
+        .unwrap();
+    alice
+        .create_thread(&new_thread(
+            "Disk usage survey",
+            "code/ is 251G, mostly per-project venv directories",
+            &["storage"],
+        ))
+        .await
+        .unwrap();
+    alice
+}
+
+#[tokio::test]
+async fn search_finds_a_post_and_shows_the_matching_fragment() {
+    let h = Harness::start().await;
+    let alice = seeded_board(&h).await;
+
+    let r = alice
+        .search(&SearchRequest::new("reward panel"))
+        .await
+        .unwrap();
+    assert_eq!(r.hits.len(), 1);
+    assert_eq!(
+        r.hits[0].post.thread_title,
+        "Frozen-index RL for retrievers"
+    );
+    // The snippet marks what matched, so a caller can judge the hit without
+    // opening the thread. FTS5 brackets the phrase as a whole, not each word.
+    assert!(
+        r.hits[0].snippet.contains("[reward panel]"),
+        "phrase not marked in snippet: {}",
+        r.hits[0].snippet
+    );
+}
+
+#[tokio::test]
+async fn a_hyphenated_name_searches_literally() {
+    // The trap this exists for: FTS5 parses a bare `ttt-embed` as syntax and
+    // fails with "no such column: embed". Repo names are the common query.
+    let h = Harness::start().await;
+    let alice = seeded_board(&h).await;
+
+    let r = alice
+        .search(&SearchRequest::new("ttt-embed"))
+        .await
+        .unwrap();
+    assert_eq!(r.hits.len(), 1);
+    assert!(r.hits[0].snippet.contains("ttt-embed"));
+
+    // Other punctuation an agent will actually type.
+    for q in ["recall@10", "code/", "0.71"] {
+        assert!(
+            alice.search(&SearchRequest::new(q)).await.is_ok(),
+            "query {q:?} failed"
+        );
+    }
+    // ...and a quote does not break out of the phrase.
+    assert!(
+        alice
+            .search(&SearchRequest::new("a \" quote"))
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn raw_mode_exposes_the_fts_operators() {
+    let h = Harness::start().await;
+    let alice = seeded_board(&h).await;
+
+    let r = alice
+        .search(&SearchRequest::new("reward AND crashed").raw(true))
+        .await
+        .unwrap();
+    assert_eq!(r.hits.len(), 1);
+
+    let r = alice
+        .search(&SearchRequest::new("teach*").raw(true))
+        .await
+        .unwrap();
+    assert_eq!(r.hits.len(), 1, "prefix search found nothing");
+
+    // A malformed expression is the caller's mistake, so it must be a 400.
+    let err = alice
+        .search(&SearchRequest::new("ttt-embed").raw(true))
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, Kind::Config);
+    assert!(err.message.contains("bad search query"), "{}", err.message);
+}
+
+#[tokio::test]
+async fn search_matches_thread_titles_as_well_as_bodies() {
+    let h = Harness::start().await;
+    let alice = seeded_board(&h).await;
+
+    // "Disk usage" appears in a title but in no post body.
+    let r = alice
+        .search(&SearchRequest::new("Disk usage"))
+        .await
+        .unwrap();
+    assert_eq!(r.threads.len(), 1);
+    assert_eq!(r.threads[0].title, "Disk usage survey");
+    assert!(r.hits.is_empty());
+}
+
+#[tokio::test]
+async fn search_can_be_narrowed_by_tag_and_limit() {
+    let h = Harness::start().await;
+    let alice = seeded_board(&h).await;
+    alice
+        .create_thread(&new_thread(
+            "Another",
+            "the reward panel again",
+            &["storage"],
+        ))
+        .await
+        .unwrap();
+
+    let all = alice.search(&SearchRequest::new("reward")).await.unwrap();
+    assert_eq!(all.hits.len(), 2);
+
+    let scoped = alice
+        .search(&SearchRequest::new("reward").tag(Some("experiments".into())))
+        .await
+        .unwrap();
+    assert_eq!(scoped.hits.len(), 1);
+    assert_eq!(
+        scoped.hits[0].post.thread_title,
+        "Frozen-index RL for retrievers"
+    );
+
+    let capped = alice
+        .search(&SearchRequest::new("reward").limit(Some(1)))
+        .await
+        .unwrap();
+    assert_eq!(capped.hits.len(), 1);
+}
+
+#[tokio::test]
+async fn search_sees_posts_written_after_the_index_existed() {
+    let h = Harness::start().await;
+    let alice = seeded_board(&h).await;
+    assert!(
+        alice
+            .search(&SearchRequest::new("brand new"))
+            .await
+            .unwrap()
+            .hits
+            .is_empty()
+    );
+
+    alice
+        .create_thread(&new_thread("Later", "a brand new observation", &[]))
+        .await
+        .unwrap();
+    // The insert trigger keeps the index current without a rebuild.
+    let r = alice
+        .search(&SearchRequest::new("brand new"))
+        .await
+        .unwrap();
+    assert_eq!(r.hits.len(), 1);
+}
+
+#[tokio::test]
+async fn an_empty_search_is_refused() {
+    let h = Harness::start().await;
+    let alice = seeded_board(&h).await;
+    for q in ["", "   "] {
+        let err = alice.search(&SearchRequest::new(q)).await.unwrap_err();
+        assert_eq!(err.kind, Kind::Config);
+    }
+}
+
+#[tokio::test]
+async fn search_returns_reactions_like_any_other_post_view() {
+    let h = Harness::start().await;
+    let alice = seeded_board(&h).await;
+    let bob = h.agent("bob").await;
+    bob.react(1, "🎉").await.unwrap();
+
+    let r = alice
+        .search(&SearchRequest::new("reward panel"))
+        .await
+        .unwrap();
+    assert_eq!(r.hits[0].post.reactions[0].emoji, "🎉");
+}
+
+#[tokio::test]
+async fn a_v2_database_gains_a_populated_search_index() {
+    // The migration has to backfill: posts written before search existed must
+    // be findable, or search is useless on exactly the boards that need it.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db = dir.path().join("b.sqlite").to_string_lossy().into_owned();
+    let args = ServeArgs {
+        db: db.clone(),
+        bind: "127.0.0.1:0".into(),
+        admin_token: Some(ADMIN.into()),
+        post_rate: 0,
+    };
+
+    // Build a board, then drop the index to simulate a pre-v3 database.
+    {
+        let (listener, state) = server::bind(&args).await.expect("bind");
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = server::serve(listener, state, std::future::pending()).await;
+        });
+        let c = Client::new(Resolved {
+            url: format!("http://{addr}"),
+            token: ADMIN.into(),
+        })
+        .unwrap();
+        c.create_thread(&new_thread("old", "written before search existed", &[]))
+            .await
+            .unwrap();
+        handle.abort();
+    }
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "DROP TRIGGER posts_fts_insert; DROP TABLE posts_fts;
+             DELETE FROM schema_version; INSERT INTO schema_version (version) VALUES (2);",
+        )
+        .expect("rewind to v2");
+    }
+
+    // Re-opening migrates and backfills.
+    let (listener, state) = server::bind(&args).await.expect("bind");
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = server::serve(listener, state, std::future::pending()).await;
+    });
+    let c = Client::new(Resolved {
+        url: format!("http://{addr}"),
+        token: ADMIN.into(),
+    })
+    .unwrap();
+
+    let r = c
+        .search(&SearchRequest::new("before search"))
+        .await
+        .unwrap();
+    assert_eq!(r.hits.len(), 1, "the backfill missed pre-existing posts");
+    assert_eq!(r.hits[0].post.body, "written before search existed");
 }

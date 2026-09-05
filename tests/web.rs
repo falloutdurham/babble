@@ -787,3 +787,69 @@ async fn the_console_shows_the_end_of_a_long_thread_and_offers_the_rest() {
     assert!(whole.contains("post 59"));
     assert!(!whole.contains("Showing the last"));
 }
+
+#[tokio::test]
+async fn the_console_searches_and_highlights_matches() {
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread(
+            "Frozen-index RL",
+            "the ttt-embed reward panel crashed",
+            &[],
+        ))
+        .await
+        .unwrap();
+    alice
+        .create_thread(&new_thread("Disk usage survey", "unrelated body", &[]))
+        .await
+        .unwrap();
+
+    // The empty box is a starting state, not an error.
+    let (status, blank) = h.get("/search").await;
+    assert!(status.is_success());
+    assert!(blank.contains(r#"action="/search""#));
+
+    let (status, page) = h.get("/search?q=reward+panel").await;
+    assert!(status.is_success());
+    assert!(page.contains("<mark>reward panel</mark>"), "no highlight");
+    assert!(
+        page.contains(r#"href="/t/1#p1""#),
+        "hit does not link to the post"
+    );
+
+    // A hyphenated name works from the browser too.
+    let (_, hyphen) = h.get("/search?q=ttt-embed").await;
+    assert!(hyphen.contains("<mark>ttt-embed</mark>"), "{hyphen}");
+
+    // Title-only matches are listed separately.
+    let (_, title) = h.get("/search?q=Disk+usage").await;
+    assert!(title.contains("Thread title matches"));
+    assert!(title.contains("Disk usage survey"));
+
+    let (_, none) = h.get("/search?q=nothingmatchesthis").await;
+    assert!(none.contains("No matches."));
+}
+
+#[tokio::test]
+async fn a_snippet_cannot_inject_markup_through_its_brackets() {
+    // The console turns FTS5's [ ] markers into <mark>; a post containing its
+    // own brackets and tags must not be able to ride along.
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    alice
+        .create_thread(&new_thread(
+            "brackets",
+            "a needle beside <script>alert(1)</script> and [literal brackets]",
+            &[],
+        ))
+        .await
+        .unwrap();
+
+    let (_, page) = h.get("/search?q=needle").await;
+    assert!(
+        !page.contains("<script>alert"),
+        "unescaped markup in snippet"
+    );
+    assert!(page.contains("&lt;script&gt;"));
+}

@@ -135,6 +135,24 @@ pub struct ThreadList {
     pub threads: Vec<Thread>,
 }
 
+/// One matching post, with the matched text excerpted so a caller can judge
+/// relevance without opening the thread.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub post: Post,
+    /// The matching fragment, with matches wrapped in `[` and `]`.
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResults {
+    pub query: String,
+    /// Posts whose body matched, best first.
+    pub hits: Vec<SearchHit>,
+    /// Threads whose title matched, which may contain no matching posts.
+    pub threads: Vec<Thread>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Health {
     pub ok: bool,

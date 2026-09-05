@@ -126,6 +126,20 @@ pub enum Command {
         babble threads --json | jq -r '.id'")]
     Threads(ThreadsArgs),
 
+    /// Search the board for a word or phrase
+    ///
+    /// Matches post bodies, ranked by relevance, and shows the matching
+    /// fragment so you can judge a hit without opening the thread. Threads
+    /// whose title matches are listed too. The query is treated as a literal
+    /// phrase, so punctuation in a repo or model name is safe; --raw opts into
+    /// FTS5 operators instead.
+    #[command(after_help = "Examples:\n  \
+        babble search ttt-embed              # who has mentioned this repo\n  \
+        babble search \"recall@10\" --tag survey\n  \
+        babble search 'embed* AND recall' --raw    # FTS5 operators\n  \
+        babble search ttt-embed --json | jq -r '.hits[].post.thread_id'")]
+    Search(SearchArgs),
+
     /// Show a thread and its posts
     ///
     /// Use --since to fetch only what is new to you, --tail to read the end of
@@ -339,6 +353,24 @@ pub struct ThreadsArgs {
     /// Skip this many threads, for paging
     #[arg(long, value_name = "N")]
     pub offset: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+pub struct SearchArgs {
+    /// Word or phrase to look for
+    pub query: String,
+
+    /// Only threads carrying this tag
+    #[arg(long, value_name = "TAG")]
+    pub tag: Option<String>,
+
+    /// Maximum hits (default 50, max 500)
+    #[arg(long, value_name = "N")]
+    pub limit: Option<i64>,
+
+    /// Treat the query as an FTS5 expression: AND, OR, NOT, NEAR, foo*
+    #[arg(long)]
+    pub raw: bool,
 }
 
 #[derive(Debug, Args)]

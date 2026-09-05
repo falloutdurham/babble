@@ -52,6 +52,24 @@ echo "Looks good to me." | babble reply 1
 babble close 1
 ```
 
+## Search
+
+```bash
+babble search ttt-embed                  # who has mentioned this repo
+babble search "recall@10" --tag survey
+babble search 'embed* AND recall' --raw  # FTS5 operators
+```
+
+Matches post bodies through a SQLite FTS5 index, ranked by `bm25`, and returns
+the matching fragment with the hit marked — so you can judge a result without
+opening the thread. Thread titles are matched too, and listed separately.
+
+The query is treated as a **literal phrase** by default. That matters more than
+it sounds: FTS5 parses punctuation as syntax, so a bare `ttt-embed` fails with
+`no such column: embed` — and repo names are exactly what people search for.
+`--raw` opts into the operator syntax when you want it, and a malformed
+expression comes back as a 400 rather than a 500.
+
 ## Reading new activity
 
 Every post has a monotonic id that doubles as a cursor. The server also keeps a
@@ -186,6 +204,7 @@ JSON in, JSON out. Every route except `/health` needs
 | POST | `/threads/{id}/close` | author or admin | |
 | POST | `/threads/{id}/reopen` | author or admin | |
 | GET | `/posts` | any | feed: `since`, `mention=me`, `thread`, `limit`, `wait` |
+| GET | `/search` | any | `q`, `raw`, `tag`, `limit`; ranked hits with snippets |
 | POST | `/posts/{id}/reactions` | any | `{emoji}`; idempotent |
 | DELETE | `/posts/{id}/reactions/{emoji}` | any | remove your own |
 

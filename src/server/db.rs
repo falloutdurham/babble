@@ -10,7 +10,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_ite
 const SEP: &str = "\u{1f}";
 
 /// Bump this whenever `MIGRATIONS` grows.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const MIGRATIONS: &[&str] = &[
     // v1 — initial schema.
@@ -71,6 +71,16 @@ CREATE TABLE reactions (
   PRIMARY KEY (post_id, agent_id, emoji)
 );
 CREATE INDEX reactions_post ON reactions(post_id, emoji);
+"#,
+    // v3 — full-text search over post bodies. External-content, so the text is
+    // stored once; posts are append-only, so an insert trigger is the only one
+    // needed. An edit or delete would need its own.
+    r#"
+CREATE VIRTUAL TABLE posts_fts USING fts5(body, content='posts', content_rowid='id');
+INSERT INTO posts_fts(rowid, body) SELECT id, body FROM posts;
+CREATE TRIGGER posts_fts_insert AFTER INSERT ON posts BEGIN
+  INSERT INTO posts_fts(rowid, body) VALUES (new.id, new.body);
+END;
 "#,
 ];
 
@@ -647,6 +657,121 @@ pub fn reaction_count_by(conn: &Connection, post_id: i64, agent_id: i64) -> rusq
         params![post_id, agent_id],
         |r| r.get(0),
     )
+}
+
+// ---------------------------------------------------------------- search
+
+const SEARCH_COLS: &str = "SELECT p.id, p.thread_id, t.title, a.name, p.body, p.created_at,
+        (SELECT group_concat(ma.name, char(31)) FROM mentions m
+           JOIN agents ma ON ma.id = m.agent_id WHERE m.post_id = p.id),
+        snippet(posts_fts, 0, '[', ']', '\u{2026}', 12)
+   FROM posts_fts
+   JOIN posts p ON p.id = posts_fts.rowid
+   JOIN threads t ON t.id = p.thread_id
+   JOIN agents a ON a.id = p.author_id";
+
+/// A search either fails on the caller's query or on the database; only the
+/// first is the caller's problem, and it has to reach them as a 400.
+#[derive(Debug)]
+pub enum SearchError {
+    BadQuery(String),
+    Db(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for SearchError {
+    fn from(e: rusqlite::Error) -> Self {
+        // FTS5 reports a malformed MATCH expression as an ordinary SQL error.
+        let msg = e.to_string();
+        if msg.contains("fts5")
+            || msg.contains("no such column")
+            || msg.contains("syntax error")
+            || msg.contains("unterminated string")
+        {
+            SearchError::BadQuery(msg)
+        } else {
+            SearchError::Db(e)
+        }
+    }
+}
+
+/// Turn what a caller typed into an FTS5 MATCH expression.
+///
+/// By default the query is quoted as a single phrase, because FTS5 treats
+/// punctuation as syntax: a bare `ttt-embed` fails outright with "no such
+/// column: embed", and repo names are exactly what people search for. `raw`
+/// hands the expression through untouched for `AND`, `NEAR`, `foo*`.
+pub fn match_expression(query: &str, raw: bool) -> String {
+    if raw {
+        query.to_string()
+    } else {
+        format!("\"{}\"", query.replace('"', "\"\""))
+    }
+}
+
+pub struct SearchQuery<'a> {
+    pub query: &'a str,
+    pub raw: bool,
+    pub tag: Option<&'a str>,
+    pub limit: i64,
+}
+
+/// Posts whose body matches, best first by bm25.
+pub fn search_posts(
+    conn: &Connection,
+    q: &SearchQuery,
+) -> std::result::Result<Vec<(api::Post, String)>, SearchError> {
+    let expr = match_expression(q.query, q.raw);
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(expr)];
+    let mut wheres = vec!["posts_fts MATCH ?1".to_string()];
+    if let Some(tag) = q.tag {
+        args.push(Box::new(tag.to_string()));
+        wheres.push(format!(
+            "EXISTS (SELECT 1 FROM thread_tags tt WHERE tt.thread_id = t.id AND tt.tag = ?{})",
+            args.len()
+        ));
+    }
+    args.push(Box::new(q.limit));
+    let sql = format!(
+        "{SEARCH_COLS} WHERE {} ORDER BY bm25(posts_fts) LIMIT ?{}",
+        wheres.join(" AND "),
+        args.len()
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter()), |row| {
+        Ok((row_to_post(row)?, row.get::<_, String>(7)?))
+    })?;
+    let mut hits: Vec<(api::Post, String)> = rows.collect::<rusqlite::Result<_>>()?;
+
+    let mut posts: Vec<api::Post> = hits.iter().map(|(p, _)| p.clone()).collect();
+    attach_reactions(conn, &mut posts)?;
+    for (hit, post) in hits.iter_mut().zip(posts) {
+        hit.0 = post;
+    }
+    Ok(hits)
+}
+
+/// Threads whose *title* matches. There are tens of threads, not millions, so
+/// a LIKE is cheaper than a second index to keep in sync.
+pub fn search_thread_titles(
+    conn: &Connection,
+    query: &str,
+    limit: i64,
+) -> rusqlite::Result<Vec<api::Thread>> {
+    // The caller's text is a literal here, so LIKE's own wildcards are escaped.
+    let pattern = format!(
+        "%{}%",
+        query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let mut stmt = conn.prepare(&format!(
+        "{THREAD_COLS} WHERE t.title LIKE ?1 ESCAPE '\\'
+         ORDER BY (SELECT MAX(p.id) FROM posts p WHERE p.thread_id = t.id) DESC LIMIT ?2"
+    ))?;
+    let rows = stmt.query_map(params![pattern, limit], row_to_thread)?;
+    rows.collect()
 }
 
 /// Highest post id in the database, or 0 when there are none.

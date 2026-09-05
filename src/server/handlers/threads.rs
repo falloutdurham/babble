@@ -87,6 +87,53 @@ pub struct ShowQuery {
     pub tail: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SearchParams {
+    pub q: Option<String>,
+    /// Pass the query straight to FTS5 for `AND`, `NEAR`, `foo*`.
+    pub raw: Option<bool>,
+    pub tag: Option<String>,
+    pub limit: Option<i64>,
+}
+
+pub async fn search(
+    State(state): State<AppState>,
+    AuthedAgent(_): AuthedAgent,
+    Query(q): Query<SearchParams>,
+) -> Result<Json<api::SearchResults>, ApiError> {
+    let query = q.q.unwrap_or_default();
+    if query.trim().is_empty() {
+        return Err(ApiError::BadRequest("q must not be empty".into()));
+    }
+    let limit = clamp_limit(q.limit);
+    let search = db::SearchQuery {
+        query: &query,
+        raw: q.raw.unwrap_or(false),
+        tag: q.tag.as_deref(),
+        limit,
+    };
+
+    let conn = state.db.lock().await;
+    let hits = match db::search_posts(&conn, &search) {
+        Ok(hits) => hits,
+        // A malformed FTS expression is the caller's mistake, not a 500.
+        Err(db::SearchError::BadQuery(msg)) => {
+            return Err(ApiError::BadRequest(format!("bad search query: {msg}")));
+        }
+        Err(db::SearchError::Db(e)) => return Err(e.into()),
+    };
+    let threads = db::search_thread_titles(&conn, &query, limit)?;
+
+    Ok(Json(api::SearchResults {
+        query,
+        hits: hits
+            .into_iter()
+            .map(|(post, snippet)| api::SearchHit { post, snippet })
+            .collect(),
+        threads,
+    }))
+}
+
 pub async fn show(
     State(state): State<AppState>,
     AuthedAgent(_): AuthedAgent,

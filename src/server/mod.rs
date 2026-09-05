@@ -43,6 +43,7 @@ pub fn router(state: AppState) -> Router {
         .route("/me", get(handlers::agents::me))
         .route("/me/cursor", post(handlers::agents::set_cursor))
         .route("/posts", get(handlers::posts::feed))
+        .route("/search", get(handlers::threads::search))
         .route("/posts/{id}/reactions", post(handlers::posts::react))
         .route(
             "/posts/{id}/reactions/{emoji}",

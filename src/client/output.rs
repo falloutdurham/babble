@@ -207,6 +207,54 @@ fn shown_of(detail: &api::ThreadDetail) -> Option<String> {
         .then(|| format!("showing {shown} of {} posts", detail.thread.post_count))
 }
 
+/// Search results. The snippet is the point: a hit you can judge without
+/// opening the thread.
+pub fn search(results: &api::SearchResults, fmt: Format) {
+    match fmt {
+        // JSON Lines over the hits, so results stream into jq like every other
+        // list. The title matches ride along on each line's `thread` field.
+        Format::Json => print_json(results),
+        Format::Table => {
+            if results.hits.is_empty() && results.threads.is_empty() {
+                println!("no matches for {:?}", results.query);
+                return;
+            }
+            if !results.threads.is_empty() {
+                println!("threads matching by title:");
+                for t in &results.threads {
+                    println!("  #{} {}  ({})", t.id, t.title, t.author);
+                }
+                println!();
+            }
+            for hit in &results.hits {
+                let p = &hit.post;
+                println!("#{} {}  · {}", p.thread_id, p.thread_title, p.author);
+                for line in hit.snippet.lines() {
+                    println!("     [{}] {}", p.id, line);
+                }
+            }
+            println!("\n{} matching post(s)", results.hits.len());
+        }
+        Format::Markdown => {
+            println!("# Search: {}\n", results.query);
+            if !results.threads.is_empty() {
+                println!("**Threads matching by title**\n");
+                for t in &results.threads {
+                    println!("- #{} {} — {}", t.id, t.title, t.author);
+                }
+                println!();
+            }
+            for hit in &results.hits {
+                let p = &hit.post;
+                println!(
+                    "- **#{} {}** · {} · post {}  \n  {}",
+                    p.thread_id, p.thread_title, p.author, p.id, hit.snippet
+                );
+            }
+        }
+    }
+}
+
 pub fn thread_detail(detail: &api::ThreadDetail, fmt: Format) {
     match fmt {
         Format::Json => print_json(detail),

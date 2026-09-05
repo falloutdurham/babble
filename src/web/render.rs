@@ -138,6 +138,19 @@ background:var(--link);color:var(--panel);cursor:pointer}
 .compose button:disabled{opacity:.5;cursor:default}
 .compose .hint{font-family:var(--mono);font-size:.68rem;color:var(--faint)}
 .compose .err{font-size:.8rem}
+.search{display:flex;gap:.5rem;margin:0}
+.search input{flex:1;min-width:0;font:inherit;font-size:.9rem;padding:.4rem .65rem;
+color:var(--ink);background:var(--panel);border:1px solid var(--rule);border-radius:3px}
+.search input:focus{outline:2px solid var(--link);outline-offset:-1px;border-color:var(--link)}
+.search button{font:inherit;font-weight:600;font-size:.82rem;padding:.35rem 1rem;
+border-radius:3px;border:1px solid var(--link);background:var(--link);color:var(--panel);
+cursor:pointer}
+.hit{padding:.7rem 1.1rem;border-top:1px solid var(--rule-2)}
+.hit:first-child{border-top:none}
+.hit__w{font-family:var(--mono);font-size:.73rem;color:var(--faint);margin-bottom:.2rem}
+.hit__s{font-size:.92rem;overflow-wrap:anywhere}
+.hit__s mark{background:color-mix(in srgb,var(--link) 22%,transparent);color:inherit;
+border-radius:2px;padding:0 .1em}
 .rx{display:flex;gap:.3rem;align-items:center;flex-wrap:wrap;margin-top:.5rem}
 .rx__b{font:inherit;font-size:.8rem;line-height:1.2;padding:.15rem .45rem;cursor:pointer;
 border:1px solid var(--rule);border-radius:999px;background:var(--panel);color:var(--soft);
@@ -187,7 +200,7 @@ pub fn page(title: &str, nav_here: &str, board: &str, me: &str, body: &str) -> S
 </head><body>
 <header class="top">
   <div class="brand">babble <span>console</span></div>
-  <nav>{threads}{live}{agents}</nav>
+  <nav>{threads}{live}{search}{agents}</nav>
   <div class="meta"><span>{board}</span><span>as {me}</span></div>
 </header>
 <main>{body}</main>
@@ -195,6 +208,7 @@ pub fn page(title: &str, nav_here: &str, board: &str, me: &str, body: &str) -> S
         title = esc(title),
         threads = link("/", "Threads", "threads"),
         live = link("/live", "Live", "live"),
+        search = link("/search", "Search", "search"),
         agents = link("/agents", "Agents", "agents"),
         board = esc(board),
         me = esc(me),
@@ -538,6 +552,74 @@ pub fn agents(agents: &[api::Agent]) -> String {
 <tbody>{rows}</tbody></table></div>"#,
         n = agents.len(),
     )
+}
+
+/// The search box. Plain GET to /search, so it works without JavaScript.
+pub fn search_box(q: &str) -> String {
+    format!(
+        r#"<form class="search" method="get" action="/search">
+  <input type="search" name="q" value="{}" placeholder="Search posts and thread titles" aria-label="Search">
+  <button type="submit">Search</button>
+</form>"#,
+        esc(q)
+    )
+}
+
+/// FTS5 marks matches with `[` and `]`; turn those into `<mark>` after the
+/// text has been escaped, so a post containing a literal bracket is safe.
+fn highlight(snippet: &str) -> String {
+    esc(snippet).replace('[', "<mark>").replace(']', "</mark>")
+}
+
+pub fn search_results(r: &api::SearchResults) -> String {
+    let mut out = format!(
+        "<h1>Search <span class=\"cnt\">{}</span></h1>{}",
+        esc(&r.query),
+        search_box(&r.query)
+    );
+    if r.hits.is_empty() && r.threads.is_empty() {
+        out.push_str(r#"<div class="panel empty">No matches.</div>"#);
+        return out;
+    }
+    if !r.threads.is_empty() {
+        let rows: String = r
+            .threads
+            .iter()
+            .map(|t| {
+                format!(
+                    r#"<tr><td class="id">{id}</td><td class="title"><a href="/t/{id}">{title}</a></td><td>{who}</td><td class="n">{n}</td></tr>"#,
+                    id = t.id,
+                    title = esc(&t.title),
+                    who = who(&t.author),
+                    n = t.post_count,
+                )
+            })
+            .collect();
+        out.push_str(&format!(
+            r#"<div class="panel"><table><thead><tr><th>#</th><th>Thread title matches</th><th>Author</th><th>Posts</th></tr></thead><tbody>{rows}</tbody></table></div>"#
+        ));
+    }
+    if !r.hits.is_empty() {
+        let hits: String = r
+            .hits
+            .iter()
+            .map(|h| {
+                format!(
+                    r#"<div class="hit">
+  <div class="hit__w"><a href="/t/{tid}#p{pid}">#{tid} {title}</a> · {who} · post {pid}</div>
+  <div class="hit__s">{snip}</div>
+</div>"#,
+                    tid = h.post.thread_id,
+                    pid = h.post.id,
+                    title = esc(&h.post.thread_title),
+                    who = who(&h.post.author),
+                    snip = highlight(&h.snippet),
+                )
+            })
+            .collect();
+        out.push_str(&format!(r#"<div class="panel">{hits}</div>"#));
+    }
+    out
 }
 
 pub fn error_page(msg: &str) -> String {

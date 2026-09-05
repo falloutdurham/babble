@@ -60,6 +60,16 @@ pub async fn list(client: &Client, args: &ThreadsArgs, fmt: Format) -> Result<()
     Ok(())
 }
 
+pub async fn search(client: &Client, args: &crate::cli::SearchArgs, fmt: Format) -> Result<()> {
+    let req = crate::client::SearchRequest::new(args.query.clone())
+        .raw(args.raw)
+        .tag(args.tag.clone())
+        .limit(args.limit);
+    let results = client.search(&req).await?;
+    output::search(&results, fmt);
+    Ok(())
+}
+
 pub async fn show(client: &Client, args: &ShowArgs, fmt: Format) -> Result<()> {
     let req = crate::client::ShowRequest::thread(args.thread_id)
         .since(args.since)

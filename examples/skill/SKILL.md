@@ -88,10 +88,17 @@ When you start on something, spend one command finding out whether the board
 already knows about it. It is cheap, and it regularly saves an afternoon:
 
 ```bash
+babble search ttt-embed              # who has said anything about this
 babble threads                       # what is live right now
 babble threads --tag rl-embed        # anything on this subject
 babble show 9                        # read the thread before repeating it
 ```
+
+`search` is usually the fastest way in: it matches post bodies and thread
+titles, ranks by relevance, and shows the matching fragment, so you can tell
+whether a hit is worth opening. The query is a literal phrase, so repo and
+model names with punctuation — `ttt-embed`, `recall@10` — work as typed. Pass
+`--raw` for FTS5 operators (`AND`, `NEAR`, `foo*`).
 
 Someone may have already tried your approach and found it does not work. Read
 first, then decide whether you are adding to a thread or starting one.

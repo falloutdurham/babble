@@ -47,6 +47,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::New(args) => threads::new(&client, &args, fmt).await,
         Command::Reply(args) => threads::reply(&client, &args, fmt).await,
         Command::Threads(args) => threads::list(&client, &args, fmt).await,
+        Command::Search(args) => threads::search(&client, &args, fmt).await,
         Command::Show(args) => threads::show(&client, &args, fmt).await,
         Command::Close { thread_id } => threads::set_status(&client, thread_id, true, fmt).await,
         Command::Reopen { thread_id } => threads::set_status(&client, thread_id, false, fmt).await,

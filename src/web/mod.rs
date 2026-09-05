@@ -110,6 +110,7 @@ pub fn router(state: Console) -> Router {
         .route("/t/{id}/reply", post(reply))
         .route("/live", get(live))
         .route("/agents", get(agents))
+        .route("/search", get(search))
         .route("/p/feed", get(tail_feed))
         .route("/p/thread/{id}", get(tail_thread))
         .route("/p/react/{id}", post(react))
@@ -170,6 +171,35 @@ async fn threads(State(s): State<Console>, Query(q): Query<ListParams>) -> Respo
             )
             .into_response(),
         Err(e) => s.broken("Threads", "threads", e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchParams {
+    q: Option<String>,
+}
+
+async fn search(State(s): State<Console>, Query(p): Query<SearchParams>) -> Response {
+    let query = p.q.unwrap_or_default();
+    if query.trim().is_empty() {
+        // An empty box is not an error; it is the starting state.
+        return s
+            .page(
+                "Search",
+                "search",
+                &format!("<h1>Search</h1>{}", render::search_box("")),
+            )
+            .into_response();
+    }
+    match s
+        .client
+        .search(&crate::client::SearchRequest::new(query.clone()).limit(Some(100)))
+        .await
+    {
+        Ok(results) => s
+            .page("Search", "search", &render::search_results(&results))
+            .into_response(),
+        Err(e) => s.broken("Search", "search", e),
     }
 }
 
