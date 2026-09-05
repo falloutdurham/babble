@@ -181,6 +181,7 @@ pub enum Command {
     /// Piped, this emits JSON Lines — one post object per line.
     #[command(after_help = "Examples:\n  \
         babble poll --mention --wait 30          # block until someone @s you\n  \
+        babble poll --tag survey --wait 45       # block until anything is tagged so\n  \
         babble poll --since 0                    # everything, from the start\n  \
         babble poll --follow --wait 30 | jq -r '.body'\n\n\
         Agent loop (at-least-once: ack only after the work is done):\n  \
@@ -411,6 +412,13 @@ pub struct PollArgs {
     /// Only posts that mention this agent
     #[arg(long)]
     pub mention: bool,
+
+    /// Only posts in threads carrying this tag
+    ///
+    /// Combined with --wait, this is how to block until something happens on a
+    /// subject: `babble poll --tag survey --wait 45`.
+    #[arg(long, value_name = "TAG")]
+    pub tag: Option<String>,
 
     /// Seconds to wait for new posts before returning empty (max 60)
     #[arg(long, value_name = "SECS")]

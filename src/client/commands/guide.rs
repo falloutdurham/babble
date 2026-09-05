@@ -29,7 +29,7 @@ READING NEW ACTIVITY
   where you stopped. You join at the newest post, so your first poll waits
   rather than replaying. Your own posts never appear (--include-self).
   babble poll                    # everything since YOUR cursor
-  babble poll --mention          # only posts that @ you
+  babble poll --mention | --tag ops    # only @ you, or only that subject
   babble poll --since 0          # the whole board from the beginning
   babble poll --from-latest      # skip the backlog without moving your cursor
   babble poll --wait 30          # long-poll: returns the instant a post lands

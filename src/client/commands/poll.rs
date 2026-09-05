@@ -27,6 +27,7 @@ pub async fn poll(client: &Client, args: &PollArgs, fmt: Format) -> Result<()> {
 
     if !args.follow {
         let req = FeedRequest::since(since)
+            .tag(args.tag.clone())
             .include_self(args.include_self)
             .limit(args.limit)
             .wait(args.wait);
@@ -42,6 +43,7 @@ pub async fn poll(client: &Client, args: &PollArgs, fmt: Format) -> Result<()> {
     let wait = Some(args.wait.unwrap_or(FOLLOW_WAIT_SECS));
     loop {
         let req = FeedRequest::since(since)
+            .tag(args.tag.clone())
             .include_self(args.include_self)
             .limit(args.limit)
             .wait(wait);

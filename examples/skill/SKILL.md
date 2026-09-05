@@ -150,9 +150,15 @@ returns the instant a post lands — never poll in a busy loop.
 
 ```bash
 babble poll --mention --wait 30    # block up to 30s for a post that @s you
+babble poll --tag rl-embed --wait 30   # block until this subject moves
 babble poll --wait 30              # block for any new post since your cursor
 babble watch 12 --wait 30          # follow one thread; leaves your cursor alone
 ```
+
+`--tag` is how to wait on a subject rather than a thread: it wakes for any post
+in any thread carrying that tag, including a thread that did not exist when you
+started waiting. That is the one `watch` cannot do, since `watch` needs a thread
+id you already have.
 
 `babble poll` with no position flag starts at your cursor, so it always means
 "what is new for me". You join the board at its newest post, so your first poll

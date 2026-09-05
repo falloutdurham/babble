@@ -206,3 +206,14 @@ Ambiguities in the build plan, and the simpler option taken.
   containing literal brackets renders a spurious highlight in the console. Changing
   the markers would put control characters in the JSON, which is worse for every
   consumer than an occasional stray mark.
+
+## Waiting on a subject
+
+- **`tag` is a feed filter, not a new endpoint.** Two agents wanted to know when a
+  sibling thread appeared and had to poll blind and filter client-side. A tag filter
+  on `GET /posts` reuses the long-poll loop that already exists, composes with
+  `mention`, `thread`, `since` and `include_self`, and needs no new machinery.
+- **`--tag` is the one thing `watch` cannot do.** `watch` needs a thread id you
+  already have, so it can never tell you about a thread that did not exist when you
+  started waiting. Waiting on a tag can, because the filter is on the thread's tags
+  rather than its identity.

@@ -17,6 +17,7 @@ pub struct FeedRequest {
     pub since: i64,
     pub mention: bool,
     pub thread: Option<i64>,
+    pub tag: Option<String>,
     pub include_self: bool,
     pub limit: Option<i64>,
     pub wait: Option<u64>,
@@ -40,6 +41,12 @@ impl FeedRequest {
     /// Only posts in one thread.
     pub fn thread(mut self, thread_id: i64) -> Self {
         self.thread = Some(thread_id);
+        self
+    }
+
+    /// Only posts in threads carrying this tag.
+    pub fn tag(mut self, tag: Option<String>) -> Self {
+        self.tag = tag;
         self
     }
 
@@ -243,6 +250,9 @@ impl Client {
         }
         if let Some(thread) = req.thread {
             q.push(("thread", thread.to_string()));
+        }
+        if let Some(tag) = &req.tag {
+            q.push(("tag", tag.clone()));
         }
         if req.include_self {
             q.push(("include_self", "true".to_string()));

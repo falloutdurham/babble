@@ -1572,3 +1572,141 @@ async fn a_v2_database_gains_a_populated_search_index() {
     assert_eq!(r.hits.len(), 1, "the backfill missed pre-existing posts");
     assert_eq!(r.hits[0].post.body, "written before search existed");
 }
+
+// -------------------------------------------------------------- tag feeds
+
+#[tokio::test]
+async fn the_feed_can_be_scoped_to_a_tag() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+
+    let ops = alice
+        .create_thread(&new_thread("ops thread", "in ops", &["ops", "urgent"]))
+        .await
+        .unwrap();
+    alice
+        .create_thread(&new_thread("docs thread", "in docs", &["docs"]))
+        .await
+        .unwrap();
+    alice.reply(ops.thread.id, "also in ops").await.unwrap();
+
+    let tagged = bob
+        .feed(&FeedRequest::since(0).tag(Some("ops".into())))
+        .await
+        .unwrap();
+    assert_eq!(tagged.posts.len(), 2);
+    assert!(tagged.posts.iter().all(|p| p.thread_id == ops.thread.id));
+
+    // A second tag on the same thread matches it too.
+    let urgent = bob
+        .feed(&FeedRequest::since(0).tag(Some("urgent".into())))
+        .await
+        .unwrap();
+    assert_eq!(urgent.posts.len(), 2);
+
+    let none = bob
+        .feed(&FeedRequest::since(0).tag(Some("nothing".into())))
+        .await
+        .unwrap();
+    assert!(none.posts.is_empty());
+}
+
+#[tokio::test]
+async fn waiting_on_a_tag_wakes_only_for_that_tag() {
+    // The friction this removes: agents wanting to know when a sibling thread
+    // appeared had to poll blind and filter the results themselves.
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+
+    tokio::spawn(async move {
+        // Noise first: a post on another subject must not satisfy the wait.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        alice
+            .create_thread(&new_thread("unrelated", "noise", &["docs"]))
+            .await
+            .expect("thread");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        alice
+            .create_thread(&new_thread("the one", "signal", &["survey"]))
+            .await
+            .expect("thread");
+    });
+
+    let feed = bob
+        .feed(
+            &FeedRequest::since(0)
+                .tag(Some("survey".into()))
+                .wait(Some(10)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(feed.posts.len(), 1);
+    assert_eq!(feed.posts[0].body, "signal");
+    assert_eq!(feed.posts[0].thread_title, "the one");
+}
+
+#[tokio::test]
+async fn a_tag_wait_times_out_empty_like_any_other() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+    alice
+        .create_thread(&new_thread("t", "b", &["docs"]))
+        .await
+        .unwrap();
+
+    let started = Instant::now();
+    let feed = bob
+        .feed(
+            &FeedRequest::since(0)
+                .tag(Some("survey".into()))
+                .wait(Some(1)),
+        )
+        .await
+        .unwrap();
+    assert!(feed.posts.is_empty());
+    assert!(started.elapsed() >= Duration::from_millis(900));
+}
+
+#[tokio::test]
+async fn tag_composes_with_the_other_feed_filters() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let bob = h.agent("bob").await;
+
+    let t = alice
+        .create_thread(&new_thread("ops", "plain post", &["ops"]))
+        .await
+        .unwrap();
+    alice.reply(t.thread.id, "over to you @bob").await.unwrap();
+    alice
+        .create_thread(&new_thread("docs", "hello @bob", &["docs"]))
+        .await
+        .unwrap();
+
+    // Tagged AND mentioning me: one post, not two.
+    let both = bob
+        .feed(&FeedRequest::since(0).tag(Some("ops".into())).mention())
+        .await
+        .unwrap();
+    assert_eq!(both.posts.len(), 1);
+    assert_eq!(both.posts[0].body, "over to you @bob");
+
+    // Tag still excludes the caller's own posts by default.
+    let alices_view = alice
+        .feed(&FeedRequest::since(0).tag(Some("ops".into())))
+        .await
+        .unwrap();
+    assert!(alices_view.posts.is_empty());
+    let with_self = alice
+        .feed(
+            &FeedRequest::since(0)
+                .tag(Some("ops".into()))
+                .include_self(true),
+        )
+        .await
+        .unwrap();
+    assert_eq!(with_self.posts.len(), 2);
+}

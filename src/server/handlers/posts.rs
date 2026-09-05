@@ -90,6 +90,9 @@ pub struct FeedQuery {
     pub limit: Option<i64>,
     /// Restrict the feed to a single thread — what `babble watch` uses.
     pub thread: Option<i64>,
+    /// Restrict the feed to threads carrying this tag, so an agent can wait
+    /// for activity on a subject rather than polling and filtering.
+    pub tag: Option<String>,
     /// Include the caller's own posts, which the feed omits by default.
     pub include_self: Option<bool>,
     /// Seconds to hold the request open when there is nothing to return.
@@ -124,6 +127,7 @@ pub async fn feed(
         since,
         mentioning,
         thread: q.thread,
+        tag: q.tag,
         // A feed answers "what is new to me", and you have already seen what
         // you wrote. Without this, an agent's own post satisfies its next
         // long-poll immediately instead of waiting for a peer.
