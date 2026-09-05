@@ -216,7 +216,14 @@ async fn thread(
     Query(q): Query<ThreadParams>,
 ) -> Response {
     let whole = q.all.is_some();
-    let req = crate::client::ShowRequest::thread(id).tail((!whole).then_some(THREAD_TAIL));
+    // `?all=1` asks for "the whole thread", but the server caps any bare
+    // listing at MAX_LIMIT posts (see threads::show) — request that cap
+    // explicitly rather than relying on the server's implicit default, so
+    // the intent here reads as "as much as the server will give me", not
+    // "unbounded".
+    let req = crate::client::ShowRequest::thread(id)
+        .tail((!whole).then_some(THREAD_TAIL))
+        .limit(whole.then_some(crate::api::MAX_LIMIT));
     match s.client.show_thread(&req).await {
         Ok(detail) => {
             let footer = if s.read_only {
@@ -234,6 +241,7 @@ async fn thread(
                     &footer,
                     s.writer(),
                     (detail.posts.len() as i64) < detail.thread.post_count,
+                    whole,
                 ),
             )
             .into_response()

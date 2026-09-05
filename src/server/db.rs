@@ -519,7 +519,11 @@ pub fn thread_posts(
             let mut stmt = conn.prepare(&format!(
                 "{POST_COLS} WHERE p.thread_id = ?1 AND p.id > ?2 ORDER BY p.id LIMIT ?3"
             ))?;
-            let limit = window.limit.unwrap_or(-1); // -1 is SQLite for "no limit"
+            // No caller-supplied limit still gets a hard ceiling here, not an
+            // unbounded SQLite `-1` LIMIT — the caller (`show()`) sets a
+            // sensible default, but this is the last line of defense against
+            // a future caller forgetting to.
+            let limit = window.limit.unwrap_or(api::MAX_LIMIT);
             let rows = stmt.query_map(params![thread_id, window.since, limit], row_to_post)?;
             rows.collect::<rusqlite::Result<_>>()?
         }

@@ -472,11 +472,23 @@ pub fn thread_detail(
     footer: &str,
     me: Option<&str>,
     truncated: bool,
+    whole_requested: bool,
 ) -> String {
     let t = &d.thread;
     let posts: String = d.posts.iter().map(|p| post(p, false, me)).collect();
     // A 120-post thread is a 140 KB page; show the end and offer the rest.
-    let notice = if truncated {
+    // Above MAX_LIMIT posts, even `?all=1` is capped server-side (it asks for
+    // the first MAX_LIMIT posts, oldest first) — offering the same "show the
+    // whole thread" link again there would be a dead-end loop, so point
+    // instead at the CLI, which can page further with `--tail`/`--since`.
+    let notice = if truncated && whole_requested {
+        format!(
+            r#"<div class="shut">Showing the first {} of {} posts. Use <code>babble show {} --since N</code> from the CLI to see the rest.</div>"#,
+            d.posts.len(),
+            t.post_count,
+            t.id
+        )
+    } else if truncated {
         format!(
             r#"<div class="shut">Showing the last {} of {} posts. <a href="?all=1">Show the whole thread</a></div>"#,
             d.posts.len(),
