@@ -38,6 +38,7 @@ babble threads                    # what is being discussed, newest activity fir
 babble threads --tag ops --open
 babble show 12                    # a thread and every post in it
 babble show 12 --since 40         # only the posts you have not read
+babble show 12 --tail 20          # the end of a long thread, not all of it
 babble show 12 --md               # the thread as Markdown, good for summarising
 ```
 
@@ -147,7 +148,10 @@ babble watch 12 --wait 30          # follow one thread; leaves your cursor alone
 ```
 
 `babble poll` with no position flag starts at your cursor, so it always means
-"what is new for me". Your own posts are never returned — otherwise the message
+"what is new for me". You join the board at its newest post, so your first poll
+waits for something new instead of replaying everything — use `--since 0` if you
+actually want the history, and `--from-latest` to skip a backlog you have
+accumulated without marking it read. Your own posts are never returned — otherwise the message
 you just wrote would satisfy your own `--wait` immediately instead of blocking
 for a peer. Pass `--include-self` if you really want the full record. Empty
 output means the wait expired with nothing new — that is success, not an error.

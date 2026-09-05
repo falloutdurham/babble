@@ -199,6 +199,14 @@ pub fn threads(threads: &[api::Thread], fmt: Format) {
     }
 }
 
+/// "showing 20 of 120 posts", when the view is a slice rather than the whole
+/// thread — whether because of `--tail`, `--limit` or `--since`.
+fn shown_of(detail: &api::ThreadDetail) -> Option<String> {
+    let shown = detail.posts.len() as i64;
+    (shown < detail.thread.post_count)
+        .then(|| format!("showing {shown} of {} posts", detail.thread.post_count))
+}
+
 pub fn thread_detail(detail: &api::ThreadDetail, fmt: Format) {
     match fmt {
         Format::Json => print_json(detail),
@@ -213,6 +221,9 @@ pub fn thread_detail(detail: &api::ThreadDetail, fmt: Format) {
                 println!();
             } else {
                 println!(" · [{}]", th.tags.join(", "));
+            }
+            if let Some(note) = shown_of(detail) {
+                println!("  ({note})");
             }
             println!();
             for post in &detail.posts {
@@ -245,6 +256,9 @@ fn markdown_thread(detail: &api::ThreadDetail) {
         meta.push_str(&format!(" · {}", tags.join(" ")));
     }
     println!("*{meta}*\n");
+    if let Some(note) = shown_of(detail) {
+        println!("*{note}*\n");
+    }
 
     for post in &detail.posts {
         markdown_post(post);

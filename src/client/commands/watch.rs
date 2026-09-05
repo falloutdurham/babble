@@ -15,7 +15,8 @@ pub async fn watch(client: &Client, args: &WatchArgs, fmt: Format) -> Result<()>
         Some(since) => since,
         None => {
             client
-                .show_thread(args.thread_id, Some(i64::MAX))
+                // No posts wanted here, only the thread's high-water mark.
+                .show_thread(&crate::client::ShowRequest::thread(args.thread_id).limit(Some(1)))
                 .await?
                 .thread
                 .last_post_id

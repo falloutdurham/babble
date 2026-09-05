@@ -6,7 +6,7 @@ use babble::api;
 use babble::cli::ServeArgs;
 use babble::client::config::Resolved;
 use babble::client::error::Kind;
-use babble::client::{Client, FeedRequest};
+use babble::client::{Client, FeedRequest, ShowRequest};
 use babble::server;
 use std::time::{Duration, Instant};
 
@@ -298,15 +298,24 @@ async fn showing_a_thread_supports_since_and_404s() {
         .unwrap();
     bob.reply(t.thread.id, "two").await.unwrap();
 
-    let full = bob.show_thread(t.thread.id, None).await.unwrap();
+    let full = bob
+        .show_thread(&ShowRequest::thread(t.thread.id))
+        .await
+        .unwrap();
     assert_eq!(full.posts.len(), 2);
     assert_eq!(full.thread.post_count, 2);
 
-    let tail = bob.show_thread(t.thread.id, Some(1)).await.unwrap();
+    let tail = bob
+        .show_thread(&ShowRequest::thread(t.thread.id).since(Some(1)))
+        .await
+        .unwrap();
     assert_eq!(tail.posts.len(), 1);
     assert_eq!(tail.posts[0].body, "two");
 
-    let err = bob.show_thread(9999, None).await.unwrap_err();
+    let err = bob
+        .show_thread(&ShowRequest::thread(9999))
+        .await
+        .unwrap_err();
     assert_eq!(err.kind, Kind::NotFound);
     assert_eq!(err.kind.exit_code(), 3);
 }
@@ -617,7 +626,10 @@ async fn ten_agents_posting_at_once_lose_nothing() {
         task.await.expect("task");
     }
 
-    let detail = alice.show_thread(thread_id, None).await.unwrap();
+    let detail = alice
+        .show_thread(&ShowRequest::thread(thread_id))
+        .await
+        .unwrap();
     // The opening post plus every concurrent reply.
     assert_eq!(detail.posts.len(), AGENTS * EACH + 1);
     assert_eq!(detail.thread.post_count as usize, AGENTS * EACH + 1);
@@ -792,7 +804,10 @@ async fn the_feed_leaves_out_your_own_posts_unless_asked() {
     assert_eq!(all.posts.len(), 2);
 
     // The thread view is a record, not a feed: it always shows everything.
-    let detail = alice.show_thread(t.thread.id, None).await.unwrap();
+    let detail = alice
+        .show_thread(&ShowRequest::thread(t.thread.id))
+        .await
+        .unwrap();
     assert_eq!(detail.posts.len(), 2);
 }
 
@@ -899,7 +914,10 @@ async fn reactions_show_up_wherever_posts_do() {
         .unwrap();
     bob.react(t.posts[0].id, "🎉").await.unwrap();
 
-    let detail = bob.show_thread(t.thread.id, None).await.unwrap();
+    let detail = bob
+        .show_thread(&ShowRequest::thread(t.thread.id))
+        .await
+        .unwrap();
     assert_eq!(detail.posts[0].reactions[0].emoji, "🎉");
 
     let feed = bob
@@ -1058,7 +1076,7 @@ async fn a_v1_database_gains_reactions_without_losing_anything() {
     .expect("client");
 
     // The old content is intact...
-    let detail = client.show_thread(1, None).await.unwrap();
+    let detail = client.show_thread(&ShowRequest::thread(1)).await.unwrap();
     assert_eq!(detail.thread.title, "from v1");
     assert_eq!(detail.posts[0].body, "written before reactions existed");
     assert!(detail.posts[0].reactions.is_empty());
@@ -1118,7 +1136,12 @@ async fn a_backup_of_a_running_board_is_complete() {
     assert_eq!(threads[0].post_count, 26);
     assert_eq!(threads[0].tags, vec!["ops"]);
 
-    let posts = babble::server::db::thread_posts(&conn, threads[0].id, 0).expect("posts");
+    let posts = babble::server::db::thread_posts(
+        &conn,
+        threads[0].id,
+        babble::server::db::PostWindow::default(),
+    )
+    .expect("posts");
     assert_eq!(posts.len(), 26);
     assert_eq!(posts[0].body, "the original");
     assert_eq!(posts[0].reactions[0].emoji, "🎉");
@@ -1164,4 +1187,122 @@ async fn backing_up_a_database_that_is_not_there_fails_loudly() {
     assert!(babble::server::db::backup(&missing, &dest).is_err());
     // A read-only open must not have conjured the source into existence.
     assert!(!std::path::Path::new(&missing).exists());
+}
+
+// ------------------------------------------- joining, and reading long threads
+
+#[tokio::test]
+async fn a_new_agent_joins_at_the_end_of_the_board() {
+    // The ambush this removes: a fresh agent's first `poll --wait` replayed the
+    // entire board before it would wait for anything new.
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("history", "before you arrived", &[]))
+        .await
+        .unwrap();
+    alice.reply(t.thread.id, "still before").await.unwrap();
+
+    let latecomer = h.agent("latecomer").await;
+    let me = latecomer.whoami().await.unwrap();
+    assert_eq!(
+        me.cursor, me.latest_post,
+        "new agent did not join at the end"
+    );
+
+    // So a first poll waits, rather than dumping two posts of backlog.
+    let started = Instant::now();
+    let feed = latecomer
+        .feed(&FeedRequest::since(me.cursor).wait(Some(1)))
+        .await
+        .unwrap();
+    assert!(feed.posts.is_empty());
+    assert!(started.elapsed() >= Duration::from_millis(900));
+
+    // History is still reachable on purpose.
+    let all = latecomer.feed(&FeedRequest::since(0)).await.unwrap();
+    assert_eq!(all.posts.len(), 2);
+}
+
+#[tokio::test]
+async fn the_first_agent_on_an_empty_board_starts_at_zero() {
+    let h = Harness::start().await;
+    let first = h.agent("first").await;
+    let me = first.whoami().await.unwrap();
+    assert_eq!(me.cursor, 0);
+    assert_eq!(me.latest_post, 0);
+}
+
+#[tokio::test]
+async fn a_long_thread_can_be_read_from_either_end() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("long", "post 0", &[]))
+        .await
+        .unwrap();
+    for i in 1..30 {
+        alice
+            .reply(t.thread.id, &format!("post {i}"))
+            .await
+            .unwrap();
+    }
+    let id = t.thread.id;
+
+    // Whole thread by default.
+    let all = alice.show_thread(&ShowRequest::thread(id)).await.unwrap();
+    assert_eq!(all.posts.len(), 30);
+    assert_eq!(all.thread.post_count, 30);
+
+    // The end of it, oldest-first within the slice.
+    let tail = alice
+        .show_thread(&ShowRequest::thread(id).tail(Some(5)))
+        .await
+        .unwrap();
+    assert_eq!(tail.posts.len(), 5);
+    assert_eq!(tail.posts[0].body, "post 25");
+    assert_eq!(tail.posts[4].body, "post 29");
+    // post_count still reports the whole thread, so a caller can tell it is a slice.
+    assert_eq!(tail.thread.post_count, 30);
+
+    // The start of it.
+    let head = alice
+        .show_thread(&ShowRequest::thread(id).limit(Some(5)))
+        .await
+        .unwrap();
+    assert_eq!(head.posts.len(), 5);
+    assert_eq!(head.posts[0].body, "post 0");
+    assert_eq!(head.posts[4].body, "post 4");
+
+    // Windows compose with `since`.
+    let middle = alice
+        .show_thread(&ShowRequest::thread(id).since(Some(10)).limit(Some(3)))
+        .await
+        .unwrap();
+    assert_eq!(middle.posts.len(), 3);
+    assert_eq!(middle.posts[0].body, "post 10");
+
+    // Asking for both ends at once is a usage error, not a silent preference.
+    let err = alice
+        .show_thread(&ShowRequest::thread(id).limit(Some(2)).tail(Some(2)))
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, Kind::Config);
+}
+
+#[tokio::test]
+async fn a_tail_larger_than_the_thread_returns_the_thread() {
+    let h = Harness::start().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("t", "only post", &[]))
+        .await
+        .unwrap();
+
+    let d = alice
+        .show_thread(&ShowRequest::thread(t.thread.id).tail(Some(500)))
+        .await
+        .unwrap();
+    assert_eq!(d.posts.len(), 1);
+    assert_eq!(d.posts[0].body, "only post");
 }

@@ -204,9 +204,14 @@ pub fn create_agent(
     match res {
         Ok(_) => {
             let id = conn.last_insert_rowid();
+            // Start at the board's high-water mark. A cursor of 0 would make a
+            // new agent's first `poll --wait` replay the entire board before it
+            // would wait for anything new — which ambushed every agent exactly
+            // once. History is still there via `threads`/`show`, or `--since 0`.
+            let joined_at = max_post_id(conn)?;
             conn.execute(
-                "INSERT INTO cursors (agent_id, last_seen) VALUES (?1, 0)",
-                params![id],
+                "INSERT INTO cursors (agent_id, last_seen) VALUES (?1, ?2)",
+                params![id, joined_at],
             )?;
             Ok(Some(api::Agent {
                 id,
@@ -473,16 +478,42 @@ pub fn create_post(
     Ok(get_post(conn, post_id)?.expect("post was just inserted"))
 }
 
+/// Which slice of a thread to return. `tail` takes the newest N; `limit` takes
+/// the oldest N after `since`. A long thread is unreadable in one piece, and
+/// a caller with an output budget needs to be able to ask for an end of it.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PostWindow {
+    pub since: i64,
+    pub limit: Option<i64>,
+    pub tail: Option<i64>,
+}
+
 pub fn thread_posts(
     conn: &Connection,
     thread_id: i64,
-    since: i64,
+    window: PostWindow,
 ) -> rusqlite::Result<Vec<api::Post>> {
-    let mut stmt = conn.prepare(&format!(
-        "{POST_COLS} WHERE p.thread_id = ?1 AND p.id > ?2 ORDER BY p.id"
-    ))?;
-    let rows = stmt.query_map(params![thread_id, since], row_to_post)?;
-    let mut posts: Vec<api::Post> = rows.collect::<rusqlite::Result<_>>()?;
+    let mut posts: Vec<api::Post> = match window.tail {
+        // Newest N, fetched in reverse and flipped back, so the caller always
+        // gets oldest-first regardless of which end was asked for.
+        Some(n) => {
+            let mut stmt = conn.prepare(&format!(
+                "{POST_COLS} WHERE p.thread_id = ?1 AND p.id > ?2 ORDER BY p.id DESC LIMIT ?3"
+            ))?;
+            let rows = stmt.query_map(params![thread_id, window.since, n], row_to_post)?;
+            let mut v: Vec<api::Post> = rows.collect::<rusqlite::Result<_>>()?;
+            v.reverse();
+            v
+        }
+        None => {
+            let mut stmt = conn.prepare(&format!(
+                "{POST_COLS} WHERE p.thread_id = ?1 AND p.id > ?2 ORDER BY p.id LIMIT ?3"
+            ))?;
+            let limit = window.limit.unwrap_or(-1); // -1 is SQLite for "no limit"
+            let rows = stmt.query_map(params![thread_id, window.since, limit], row_to_post)?;
+            rows.collect::<rusqlite::Result<_>>()?
+        }
+    };
     attach_reactions(conn, &mut posts)?;
     Ok(posts)
 }

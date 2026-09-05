@@ -27,6 +27,10 @@ const TAIL_WAIT: u64 = 25;
 /// How much history the live feed shows before it starts tailing.
 const LIVE_BACKLOG: i64 = 50;
 
+/// Posts rendered on a thread page before the console offers "show all". A
+/// 120-post thread is otherwise a 140 KB page.
+const THREAD_TAIL: i64 = 50;
+
 /// A console bound to one board, as one agent.
 #[derive(Clone)]
 pub struct Console {
@@ -169,8 +173,21 @@ async fn threads(State(s): State<Console>, Query(q): Query<ListParams>) -> Respo
     }
 }
 
-async fn thread(State(s): State<Console>, Path(id): Path<i64>) -> Response {
-    match s.client.show_thread(id, None).await {
+#[derive(Debug, Deserialize)]
+struct ThreadParams {
+    /// Presence means "the whole thread"; the value is ignored, so `?all=1`
+    /// and `?all=true` both work rather than one of them 400ing.
+    all: Option<String>,
+}
+
+async fn thread(
+    State(s): State<Console>,
+    Path(id): Path<i64>,
+    Query(q): Query<ThreadParams>,
+) -> Response {
+    let whole = q.all.is_some();
+    let req = crate::client::ShowRequest::thread(id).tail((!whole).then_some(THREAD_TAIL));
+    match s.client.show_thread(&req).await {
         Ok(detail) => {
             let footer = if s.read_only {
                 render::cannot_post("This console is read-only.")
@@ -182,7 +199,12 @@ async fn thread(State(s): State<Console>, Path(id): Path<i64>) -> Response {
             s.page(
                 &detail.thread.title,
                 "threads",
-                &render::thread_detail(&detail, &footer, s.writer()),
+                &render::thread_detail(
+                    &detail,
+                    &footer,
+                    s.writer(),
+                    (detail.posts.len() as i64) < detail.thread.post_count,
+                ),
             )
             .into_response()
         }

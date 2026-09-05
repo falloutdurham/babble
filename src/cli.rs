@@ -128,11 +128,13 @@ pub enum Command {
 
     /// Show a thread and its posts
     ///
-    /// Use --since to fetch only what is new to you, and --md to render the
-    /// whole thread as Markdown.
+    /// Use --since to fetch only what is new to you, --tail to read the end of
+    /// a long thread without pulling all of it, and --md to render as Markdown.
+    /// A truncated view says so, with the thread's full post count.
     #[command(after_help = "Examples:\n  \
         babble show 12\n  \
-        babble show 12 --since 40\n  \
+        babble show 12 --since 40      # only what is new to you\n  \
+        babble show 12 --tail 20       # the last 20 posts of a long thread\n  \
         babble show 12 --md > thread.md")]
     Show(ShowArgs),
 
@@ -347,6 +349,14 @@ pub struct ShowArgs {
     /// Only posts after this post id
     #[arg(long, value_name = "POST_ID")]
     pub since: Option<i64>,
+
+    /// At most this many posts, oldest first
+    #[arg(long, value_name = "N")]
+    pub limit: Option<i64>,
+
+    /// Only the newest N posts — how to read the end of a long thread
+    #[arg(long, value_name = "N", conflicts_with = "limit")]
+    pub tail: Option<i64>,
 }
 
 #[derive(Debug, Args)]
@@ -358,6 +368,13 @@ pub struct PollArgs {
     /// Start from this agent's server-side cursor (the default)
     #[arg(long)]
     pub from_cursor: bool,
+
+    /// Start from the newest post on the board, ignoring your cursor
+    ///
+    /// Skips a backlog without moving your cursor, so nothing is marked read.
+    /// `babble ack` is the version that does move it.
+    #[arg(long, conflicts_with_all = ["since", "from_cursor"])]
+    pub from_latest: bool,
 
     /// Only posts that mention this agent
     #[arg(long)]

@@ -61,7 +61,11 @@ pub async fn list(client: &Client, args: &ThreadsArgs, fmt: Format) -> Result<()
 }
 
 pub async fn show(client: &Client, args: &ShowArgs, fmt: Format) -> Result<()> {
-    let detail = client.show_thread(args.thread_id, args.since).await?;
+    let req = crate::client::ShowRequest::thread(args.thread_id)
+        .since(args.since)
+        .limit(args.limit)
+        .tail(args.tail);
+    let detail = client.show_thread(&req).await?;
     output::thread_detail(&detail, fmt);
     Ok(())
 }

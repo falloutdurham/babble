@@ -2,8 +2,8 @@
 //! in-process, and the console is driven over HTTP like a browser would.
 
 use babble::cli::ServeArgs;
-use babble::client::Client;
 use babble::client::config::Resolved;
+use babble::client::{Client, ShowRequest};
 use babble::{api, server, web};
 use std::time::{Duration, Instant};
 
@@ -386,7 +386,7 @@ async fn the_operator_can_reply_from_the_console() {
     assert!(status.is_success());
 
     // The board really has it, authored by the console's own agent.
-    let detail = alice.show_thread(1, None).await.unwrap();
+    let detail = alice.show_thread(&ShowRequest::thread(1)).await.unwrap();
     assert_eq!(detail.posts.len(), 2);
     assert_eq!(detail.posts[1].author, "admin");
     assert_eq!(detail.posts[1].body, "on it — @alice taking this");
@@ -448,7 +448,15 @@ async fn an_empty_reply_is_refused_without_touching_the_board() {
     )
     .await;
     assert!(html.contains("Write something first"));
-    assert_eq!(alice.show_thread(1, None).await.unwrap().posts.len(), 1);
+    assert_eq!(
+        alice
+            .show_thread(&ShowRequest::thread(1))
+            .await
+            .unwrap()
+            .posts
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -474,7 +482,15 @@ async fn replying_to_a_closed_thread_says_so() {
     )
     .await;
     assert!(html.contains("closed"), "{html}");
-    assert_eq!(alice.show_thread(1, None).await.unwrap().posts.len(), 1);
+    assert_eq!(
+        alice
+            .show_thread(&ShowRequest::thread(1))
+            .await
+            .unwrap()
+            .posts
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -495,7 +511,15 @@ async fn a_cross_origin_form_post_cannot_write_to_the_board() {
     )
     .await;
     assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
-    assert_eq!(alice.show_thread(1, None).await.unwrap().posts.len(), 1);
+    assert_eq!(
+        alice
+            .show_thread(&ShowRequest::thread(1))
+            .await
+            .unwrap()
+            .posts
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -553,7 +577,14 @@ async fn read_only_mode_removes_the_box_and_refuses_writes() {
     )
     .await;
     assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
-    assert_eq!(api.show_thread(1, None).await.unwrap().posts.len(), 1);
+    assert_eq!(
+        api.show_thread(&ShowRequest::thread(1))
+            .await
+            .unwrap()
+            .posts
+            .len(),
+        1
+    );
 }
 
 // ------------------------------------------------------------- reactions
@@ -587,7 +618,13 @@ async fn clicking_a_reaction_toggles_it() {
     assert!(bar.contains("\u{1f440}"), "{bar}");
     assert!(bar.contains("mine"), "own reaction is not marked: {bar}");
     assert_eq!(
-        alice.show_thread(1, None).await.unwrap().posts[0].reactions[0].by,
+        alice
+            .show_thread(&ShowRequest::thread(1))
+            .await
+            .unwrap()
+            .posts[0]
+            .reactions[0]
+            .by,
         vec!["admin"]
     );
 
@@ -595,7 +632,11 @@ async fn clicking_a_reaction_toggles_it() {
     let (_, bar) = post_query(&url, true).await;
     assert!(!bar.contains("mine"), "{bar}");
     assert!(
-        alice.show_thread(1, None).await.unwrap().posts[0]
+        alice
+            .show_thread(&ShowRequest::thread(1))
+            .await
+            .unwrap()
+            .posts[0]
             .reactions
             .is_empty()
     );
@@ -675,7 +716,10 @@ async fn a_read_only_console_shows_counts_but_no_controls() {
     let (status, _) = post_query(&format!("{console}/p/react/1?emoji=%F0%9F%91%80"), true).await;
     assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
     assert!(
-        api.show_thread(1, None).await.unwrap().posts[0]
+        api.show_thread(&ShowRequest::thread(1))
+            .await
+            .unwrap()
+            .posts[0]
             .reactions
             .iter()
             .all(|r| r.emoji != "\u{1f440}")
@@ -698,8 +742,48 @@ async fn a_cross_origin_click_cannot_react() {
     .await;
     assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
     assert!(
-        alice.show_thread(1, None).await.unwrap().posts[0]
+        alice
+            .show_thread(&ShowRequest::thread(1))
+            .await
+            .unwrap()
+            .posts[0]
             .reactions
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn the_console_shows_the_end_of_a_long_thread_and_offers_the_rest() {
+    let h = writable().await;
+    let alice = h.agent("alice").await;
+    let t = alice
+        .create_thread(&new_thread("long", "post 0", &[]))
+        .await
+        .unwrap();
+    for i in 1..60 {
+        alice
+            .reply(t.thread.id, &format!("post {i}"))
+            .await
+            .unwrap();
+    }
+
+    // Default view is the tail, and says so rather than silently dropping posts.
+    let (status, page) = h.get("/t/1").await;
+    assert!(status.is_success());
+    assert!(page.contains("post 59"), "newest post missing");
+    assert!(
+        !page.contains(">post 0<"),
+        "whole thread rendered by default"
+    );
+    assert!(
+        page.contains("Showing the last 50 of 60 posts"),
+        "no notice"
+    );
+    assert!(page.contains(r#"href="?all=1""#));
+
+    // ...and the escape hatch really does return everything.
+    let (_, whole) = h.get("/t/1?all=1").await;
+    assert!(whole.contains("post 0"));
+    assert!(whole.contains("post 59"));
+    assert!(!whole.contains("Showing the last"));
 }

@@ -11,8 +11,11 @@ const FOLLOW_WAIT_SECS: u64 = 30;
 /// Where to start reading. With neither flag, the agent's server-side cursor
 /// is the useful default: `babble poll` then means "what's new for me".
 async fn start_at(client: &Client, args: &PollArgs) -> Result<i64> {
-    // `--from-cursor` makes the default explicit; clap keeps it and `--since`
-    // mutually exclusive.
+    if args.from_latest {
+        return Ok(client.whoami().await?.latest_post);
+    }
+    // `--from-cursor` makes the default explicit; clap keeps the three
+    // position flags mutually exclusive.
     if args.from_cursor || args.since.is_none() {
         return Ok(client.whoami().await?.cursor);
     }

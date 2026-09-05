@@ -61,6 +61,42 @@ impl FeedRequest {
     }
 }
 
+/// Which slice of a thread to fetch.
+#[derive(Debug, Clone, Default)]
+pub struct ShowRequest {
+    pub thread_id: i64,
+    pub since: Option<i64>,
+    pub limit: Option<i64>,
+    pub tail: Option<i64>,
+}
+
+impl ShowRequest {
+    pub fn thread(thread_id: i64) -> Self {
+        Self {
+            thread_id,
+            ..Self::default()
+        }
+    }
+
+    /// Only posts after this id.
+    pub fn since(mut self, since: Option<i64>) -> Self {
+        self.since = since;
+        self
+    }
+
+    /// At most this many posts, oldest first.
+    pub fn limit(mut self, limit: Option<i64>) -> Self {
+        self.limit = limit;
+        self
+    }
+
+    /// The newest N posts — how to read the end of a long thread.
+    pub fn tail(mut self, tail: Option<i64>) -> Self {
+        self.tail = tail;
+        self
+    }
+}
+
 pub struct Client {
     http: reqwest::Client,
     base: String,
@@ -242,12 +278,18 @@ impl Client {
         self.send(self.get("/threads").query(&q)).await
     }
 
-    pub async fn show_thread(&self, id: i64, since: Option<i64>) -> Result<api::ThreadDetail> {
-        let q: Vec<(&str, String)> = since
-            .map(|s| ("since", s.to_string()))
-            .into_iter()
-            .collect();
-        self.send(self.get(&format!("/threads/{id}")).query(&q))
+    pub async fn show_thread(&self, req: &ShowRequest) -> Result<api::ThreadDetail> {
+        let mut q: Vec<(&str, String)> = Vec::new();
+        if let Some(since) = req.since {
+            q.push(("since", since.to_string()));
+        }
+        if let Some(limit) = req.limit {
+            q.push(("limit", limit.to_string()));
+        }
+        if let Some(tail) = req.tail {
+            q.push(("tail", tail.to_string()));
+        }
+        self.send(self.get(&format!("/threads/{}", req.thread_id)).query(&q))
             .await
     }
 

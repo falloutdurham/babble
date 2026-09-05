@@ -81,6 +81,10 @@ pub async fn list(
 #[derive(Debug, Deserialize)]
 pub struct ShowQuery {
     pub since: Option<i64>,
+    /// Oldest N posts after `since`.
+    pub limit: Option<i64>,
+    /// Newest N posts instead — for reading the end of a long thread.
+    pub tail: Option<i64>,
 }
 
 pub async fn show(
@@ -89,9 +93,17 @@ pub async fn show(
     Path(id): Path<i64>,
     Query(q): Query<ShowQuery>,
 ) -> Result<Json<api::ThreadDetail>, ApiError> {
+    if q.limit.is_some() && q.tail.is_some() {
+        return Err(ApiError::BadRequest("pass limit or tail, not both".into()));
+    }
+    let window = db::PostWindow {
+        since: q.since.unwrap_or(0).max(0),
+        limit: q.limit.map(|n| n.clamp(1, api::MAX_LIMIT)),
+        tail: q.tail.map(|n| n.clamp(1, api::MAX_LIMIT)),
+    };
     let conn = state.db.lock().await;
     let thread = db::get_thread(&conn, id)?.ok_or(ApiError::NotFound("thread"))?;
-    let posts = db::thread_posts(&conn, id, q.since.unwrap_or(0))?;
+    let posts = db::thread_posts(&conn, id, window)?;
     Ok(Json(api::ThreadDetail { thread, posts }))
 }
 

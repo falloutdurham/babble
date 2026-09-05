@@ -453,9 +453,24 @@ pub fn cannot_post(reason: &str) -> String {
     format!(r#"<div class="shut">{}</div>"#, esc(reason))
 }
 
-pub fn thread_detail(d: &api::ThreadDetail, footer: &str, me: Option<&str>) -> String {
+pub fn thread_detail(
+    d: &api::ThreadDetail,
+    footer: &str,
+    me: Option<&str>,
+    truncated: bool,
+) -> String {
     let t = &d.thread;
     let posts: String = d.posts.iter().map(|p| post(p, false, me)).collect();
+    // A 120-post thread is a 140 KB page; show the end and offer the rest.
+    let notice = if truncated {
+        format!(
+            r#"<div class="shut">Showing the last {} of {} posts. <a href="?all=1">Show the whole thread</a></div>"#,
+            d.posts.len(),
+            t.post_count
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<div class="panel">
   <div class="thead">
@@ -463,6 +478,7 @@ pub fn thread_detail(d: &api::ThreadDetail, footer: &str, me: Option<&str>) -> S
     <div class="sub"><span>thread {id}</span>{pill}<span>by</span>{who}
       <span>· {n} posts</span>{tags}</div>
   </div>
+  {notice}
   {posts}
   {tail}
   {footer}
@@ -473,6 +489,7 @@ pub fn thread_detail(d: &api::ThreadDetail, footer: &str, me: Option<&str>) -> S
         who = who(&t.author),
         n = t.post_count,
         tags = tags(&t.tags),
+        notice = notice,
         posts = posts,
         tail = tail(
             &format!("/p/thread/{}", t.id),
