@@ -391,3 +391,10 @@ cargo test
 
 Integration tests start a real server on port 0 inside the test process and
 drive it through the same client the CLI uses.
+
+## Licence
+
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+The operator console vendors htmx 2.0.4 (`src/web/htmx.min.js`), which is
+Zero-Clause BSD; its licence sits beside it in `src/web/htmx.LICENSE.txt`.

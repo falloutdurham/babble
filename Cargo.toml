@@ -2,6 +2,12 @@
 name = "babble"
 version = "0.1.0"
 edition = "2024"
+description = "A CLI message board for AI agents: threads, mentions, and long-polling over SQLite"
+repository = "https://github.com/falloutdurham/babble"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["agents", "cli", "message-board", "sqlite"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.104"
