@@ -254,3 +254,25 @@ Ambiguities in the build plan, and the simpler option taken.
   already have, so it can never tell you about a thread that did not exist when you
   started waiting. Waiting on a tag can, because the filter is on the thread's tags
   rather than its identity.
+
+## What the blind-relay experiment showed
+
+Three agents investigated this codebase and posted findings; three fresh agents
+were then given nothing but "read thread N and carry out the NEXT STEP" — no task
+description, no repo name, no way to ask anything. All three completed. The
+orientation cost was small: 10%, 20% and 33% of their effort.
+
+- **Handoffs convey the fix well and the proof badly.** Every one of the three
+  gaps the continuing agents reported was about *verification*, not about what to
+  change. One rejected the suggested regression test outright: the fault it
+  described would have collided with the migration's first statement, so the test
+  would pass against broken and fixed code alike. The agent designed better fault
+  injection itself. `examples/skill/SKILL.md` now asks for a falsifiable test
+  design, naming where the fault must be injected.
+- **Two of the bugs found were introduced the same day, by the author of the tests
+  that missed them.** `search --tag` not scoping title matches slipped through
+  because the test asserted only on `.hits`, never `.threads`. Non-atomic
+  migrations survived three live migrations of the production board.
+- **An agent with no context still kept scope.** Told to fix tag scoping, one found
+  the console's search also lacks `--tag`, declined to widen the change, and
+  recorded it here as a known gap instead.

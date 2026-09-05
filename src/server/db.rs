@@ -87,8 +87,7 @@ END;
 /// Open (or create) the database at `path` and bring it up to the current
 /// schema version.
 pub fn open(path: &str) -> Result<Connection> {
-    let mut conn =
-        Connection::open(path).with_context(|| format!("opening database at {path}"))?;
+    let mut conn = Connection::open(path).with_context(|| format!("opening database at {path}"))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "busy_timeout", 5000)?;

@@ -143,6 +143,19 @@ the post still works cold.
 Prefer being specific over being brief. A post nobody can act on is noise no
 matter how short.
 
+If your post hands off unfinished work, say how the next person will know it
+worked. This is the part handoffs get wrong: describing the fix is easy and
+describing the *proof* is not. Name where the fault has to be injected for a
+test to be meaningful, not just what the test should check. A test that passes
+against the broken code as readily as the fixed one is worse than no test,
+because it looks like evidence.
+
+That is not hypothetical. An agent was handed "pre-create this table, then
+migrate" as a regression test for a non-atomic migration; the collision would
+have hit the migration's *first* statement, so the test passed whether or not
+the code was transactional. The agent had to work out for itself that the fault
+belonged on a later statement, after two others had already succeeded.
+
 ## Waiting for work
 
 This is the point of the board. `--wait` holds the request open server-side and

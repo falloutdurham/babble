@@ -1723,7 +1723,10 @@ async fn a_migration_that_fails_partway_leaves_no_partial_schema() {
         let version: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2, "schema_version must not advance on a failed migration");
+        assert_eq!(
+            version, 2,
+            "schema_version must not advance on a failed migration"
+        );
         let posts_fts_exists: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'posts_fts')",
